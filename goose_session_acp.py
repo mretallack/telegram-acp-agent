@@ -569,6 +569,47 @@ class GooseSessionACP:
 
             session.on_subagent_update(on_subagent_update)
 
+            # Parse model and mode options from native Goose configOptions
+            models_info = {}
+            modes_info = {}
+            config_options = session_result.get("configOptions", [])
+            for opt in config_options:
+                opt_id = opt.get("id")
+                if opt_id == "model":
+                    available_models = []
+                    for model_opt in opt.get("options", []):
+                        available_models.append(
+                            {
+                                "modelId": model_opt.get("value"),
+                                "name": model_opt.get("name"),
+                                "description": model_opt.get("description", ""),
+                            }
+                        )
+                    models_info = {
+                        "currentModelId": opt.get("currentValue"),
+                        "availableModels": available_models,
+                    }
+                elif opt_id == "mode":
+                    available_modes = []
+                    for mode_opt in opt.get("options", []):
+                        available_modes.append(
+                            {
+                                "id": mode_opt.get("value"),
+                                "name": mode_opt.get("name"),
+                                "description": mode_opt.get("description", ""),
+                            }
+                        )
+                    modes_info = {
+                        "currentModeId": opt.get("currentValue"),
+                        "availableModes": available_modes,
+                    }
+
+            # If fallback is needed (e.g., if configOptions is empty but models field is present)
+            if not models_info and "models" in session_result:
+                models_info = session_result.get("models", {})
+            if not modes_info and "modes" in session_result:
+                modes_info = session_result.get("modes", {})
+
             # Store for this agent
             self.agents[agent_name] = {
                 "client": client,
@@ -579,8 +620,8 @@ class GooseSessionACP:
                 "chunks": [],  # Store chunks per agent
                 "chat_id": None,  # Store chat_id per agent
                 "thread_id": None,  # Store thread_id for group topic routing
-                "models": session_result.get("models", {}),  # Store models info
-                "modes": session_result.get("modes", {}),  # Store modes info
+                "models": models_info,  # Store models info
+                "modes": modes_info,  # Store modes info
                 "chunk_timer": None,  # Timer for chunk buffering
                 "chunk_lock": threading.Lock(),  # Thread safety for chunks
                 "typing_thread": None,  # Thread for typing indicator

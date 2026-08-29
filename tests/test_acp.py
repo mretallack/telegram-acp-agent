@@ -2,10 +2,10 @@
 """Basic ACP tests."""
 
 import pytest
+from kiro_session_acp import KiroSessionACP
 
 from acp_client import ACPClient
 from acp_session import ACPSession
-from kiro_session_acp import KiroSessionACP
 
 
 class TestACPBasic:

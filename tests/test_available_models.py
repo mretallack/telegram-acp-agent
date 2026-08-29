@@ -38,34 +38,48 @@ def test_available_models():
     assert "sessionId" in result, "Response should contain sessionId"
     print(f"   ✓ sessionId: {result['sessionId']}")
 
+    assert (
+        "models" in result or "configOptions" in result
+    ), "Response should contain models field or configOptions"
+
+    # Extract model options
+    models = {}
     if "models" in result:
-        print(f"   ✓ models field present")
         models = result["models"]
-
-        if "currentModelId" in models:
-            print(f"   ✓ currentModelId: {models['currentModelId']}")
-
-        if "availableModels" in models:
-            print(
-                f"   ✓ availableModels present with {len(models['availableModels'])} models:"
-            )
-            for model in models["availableModels"]:
-                print(f"      - {model.get('modelId')}: {model.get('name')}")
-        else:
-            print("   ✗ availableModels NOT found in models")
     else:
-        print("   ✗ models field NOT found in response")
+        # Parse from configOptions
+        config_options = result.get("configOptions", [])
+        for opt in config_options:
+            if opt.get("id") == "model":
+                available_models = []
+                for model_opt in opt.get("options", []):
+                    available_models.append(
+                        {
+                            "modelId": model_opt.get("value"),
+                            "name": model_opt.get("name"),
+                        }
+                    )
+                models = {
+                    "currentModelId": opt.get("currentValue"),
+                    "availableModels": available_models,
+                }
+
+    print(f"   ✓ model info found")
+    if "currentModelId" in models:
+        print(f"   ✓ currentModelId: {models['currentModelId']}")
+
+    if "availableModels" in models:
+        print(
+            f"   ✓ availableModels present with {len(models['availableModels'])} models:"
+        )
+        for model in models["availableModels"]:
+            print(f"      - {model.get('modelId')}: {model.get('name')}")
+    else:
+        print("   ✗ availableModels NOT found in models")
 
     client.close()
-
-    # Assertions
-    assert "models" in result, "Response should contain models field"
-    assert (
-        "availableModels" in result["models"]
-    ), "models should contain availableModels"
-    assert (
-        len(result["models"]["availableModels"]) > 0
-    ), "availableModels should not be empty"
+    assert "availableModels" in models, "models should contain availableModels"
+    assert len(models["availableModels"]) > 0, "availableModels should not be empty"
 
     print("\nTEST PASSED")
 

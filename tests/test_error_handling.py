@@ -4,7 +4,6 @@ import threading
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-
 from kiro_session_acp import KiroSessionACP
 
 
