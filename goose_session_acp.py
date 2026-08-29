@@ -39,6 +39,18 @@ class GooseSessionACP:
         self.application = None
         self.event_loop = None
 
+        # Load goose_env from settings.ini
+        self.goose_env = {}
+        try:
+            import configparser
+            config = configparser.ConfigParser()
+            config.read("settings.ini")
+            if config.has_section("goose_env"):
+                self.goose_env = dict(config.items("goose_env"))
+                logger.info(f"Loaded [goose_env] with variables: {list(self.goose_env.keys())}")
+        except Exception as e:
+            logger.warning(f"Could not load [goose_env] from settings.ini: {e}")
+
         # Configuration
         self.chunk_timeout = 2.0
         self.typing_refresh_interval = 4.0
@@ -411,7 +423,7 @@ class GooseSessionACP:
         logger.info(f"Worker: Starting session for {agent_name}")
 
         try:
-            client = ACPClient(working_dir, prompt_timeout=self.prompt_timeout)
+            client = ACPClient(working_dir, prompt_timeout=self.prompt_timeout, env=self.goose_env)
             client.start()
             client.initialize()
 

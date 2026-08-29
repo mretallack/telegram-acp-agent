@@ -6,16 +6,29 @@ authorized_user_id = YOUR_TELEGRAM_USER_ID
 auto_trust = true
 progress_updates = true
 # Directory for storing downloaded attachments (images, documents, etc.)
-attachments_dir = ~/.kiro/bot_attachments
+attachments_dir = ~/.goose/bot_attachments
 # Timeout in seconds before flushing buffered text chunks (default: 2.0)
 chunk_timeout = 2.0
 # Interval in seconds between typing indicator refreshes (default: 4.0)
 typing_refresh_interval = 4.0
-# Timeout in seconds for Kiro prompt responses (default: 600)
+# Timeout in seconds for Goose prompt responses (default: 600)
 prompt_timeout = 600
 
 [group]
 # Optional: restrict to specific group ID (negative number for supergroups)
 # group_id = -1003610178913
 # Path to topic-agent mapping cache
-topic_cache = ~/.kiro/topic_agent_map.json
+topic_cache = ~/.goose/topic_agent_map.json
+
+[goose_env]
+# Set the provider to Google
+GOOSE_PROVIDER = google
+
+# Set your Gemini API key
+GOOGLE_API_KEY = your_actual_gemini_api_key_here
+
+# Specify the exact model to use (required to bypass the setup wizard)
+GOOSE_MODEL = gemini-3.5-flash
+
+# Disable telemetry so the CLI doesn't prompt you for consent on startup
+GOOSE_TELEMETRY_ENABLED = false
