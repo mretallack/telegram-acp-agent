@@ -773,6 +773,17 @@ class TelegramBot:
             )
             return True
 
+        # Usage command
+        if normalized == "/usage":
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ The <code>\\usage</code> command is not supported in Goose ACP mode.\n"
+                     "Please use <code>\\help</code> to see available commands.",
+                message_thread_id=thread_id,
+                parse_mode="HTML"
+            )
+            return True
+
         return False
 
     async def _sync_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -891,7 +902,11 @@ class TelegramBot:
         # Usage command
         if normalized_text == "/usage":
             print(f"[DEBUG] Intercepted usage command")
-            await self.show_usage(update, context)
+            await update.message.reply_text(
+                "⚠️ The <code>\\usage</code> command is not supported in Goose ACP mode.\n"
+                "Please use <code>\\help</code> to see available commands.",
+                parse_mode="HTML"
+            )
             return True
 
         # Cancel command
