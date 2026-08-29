@@ -1,4 +1,4 @@
-"""Context usage tracker for monitoring Kiro CLI context window usage."""
+"""Context usage tracker for monitoring Goose CLI context window usage."""
 
 from typing import Optional
 

@@ -9,10 +9,10 @@ logger = logging.getLogger(__name__)
 
 
 def supports_acp() -> bool:
-    """Check if kiro-cli supports ACP."""
+    """Check if goose supports ACP."""
     try:
         result = subprocess.run(
-            ["kiro-cli", "acp", "--help"], capture_output=True, timeout=5
+            ["goose", "acp", "--help"], capture_output=True, timeout=5
         )
         supported = result.returncode == 0
         logger.info(f"ACP support: {supported}")

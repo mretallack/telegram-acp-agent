@@ -209,7 +209,7 @@ class ACPClient:
         params = {
             "protocolVersion": 1,
             "clientCapabilities": {},
-            "clientInfo": {"name": "telegram-kiro-bot", "version": "1.0.0"},
+            "clientInfo": {"name": "telegram-goose-bot", "version": "1.0.0"},
         }
 
         result = self._send_request("initialize", params)
@@ -301,7 +301,7 @@ class ACPClient:
         logger.info(f"Set model to: {model}")
 
     def execute_command(self, session_id: str, command: str) -> Dict[str, Any]:
-        """Execute a slash command (Kiro extension)."""
+        """Execute a slash command (Goose extension)."""
         params = {"sessionId": session_id, "command": command}
         result = self._send_request("_kiro.dev/commands/execute", params)
         return result

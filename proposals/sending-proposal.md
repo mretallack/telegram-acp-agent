@@ -1,21 +1,21 @@
-# Proposal: File/Artifact Sending from Kiro to Telegram
+# Proposal: File/Artifact Sending from Goose to Telegram
 
 ## Problem
-Currently, when Kiro builds artifacts (APKs, executables, etc.), there's no way to automatically send them back through the Telegram interface. Users must manually retrieve files from the system.
+Currently, when Goose builds artifacts (APKs, executables, etc.), there's no way to automatically send them back through the Telegram interface. Users must manually retrieve files from the system.
 
 ## Solution Options
 
 ### Option 1: MCP Server Integration (Recommended)
-Use an MCP server like `simple-telegram-mcp` to give Kiro direct Telegram sending capabilities.
+Use an MCP server like `simple-telegram-mcp` to give Goose direct Telegram sending capabilities.
 
 **Implementation:**
 1. Install MCP server: `pip install simple-telegram-mcp`
-2. Configure MCP in Kiro CLI to include Telegram tools
-3. Kiro can then use `/send_file` or similar commands to push files directly
+2. Configure MCP in Goose CLI to include Telegram tools
+3. Goose can then use `/send_file` or similar commands to push files directly
 
 **Pros:**
 - Clean separation of concerns
-- Kiro handles the logic, MCP handles delivery
+- Goose handles the logic, MCP handles delivery
 - Extensible to other platforms
 - No modification to existing bot code
 
@@ -24,7 +24,7 @@ Use an MCP server like `simple-telegram-mcp` to give Kiro direct Telegram sendin
 - Requires MCP configuration
 
 ### Option 2: Enhanced Bot Wrapper
-Modify the existing `telegram_kiro_bot.py` to detect file requests and handle uploads.
+Modify the existing `telegram_goose_bot.py` to detect file requests and handle uploads.
 
 **Implementation:**
 1. Add file detection in bot's response parsing
@@ -42,10 +42,10 @@ Modify the existing `telegram_kiro_bot.py` to detect file requests and handle up
 - Less flexible for other use cases
 
 ### Option 3: Hybrid Approach
-Combine both: use MCP for Kiro-side sending, enhance bot for user-initiated retrieval.
+Combine both: use MCP for Goose-side sending, enhance bot for user-initiated retrieval.
 
 **Implementation:**
-1. MCP server for Kiro to push files automatically
+1. MCP server for Goose to push files automatically
 2. Bot commands for manual file requests
 3. Shared file staging area
 
@@ -53,7 +53,7 @@ Combine both: use MCP for Kiro-side sending, enhance bot for user-initiated retr
 
 **Phase 1: MCP Integration**
 ```bash
-# Add to Kiro MCP configuration
+# Add to Goose MCP configuration
 {
   "telegram": {
     "server": "simple-telegram-mcp",
@@ -68,8 +68,8 @@ Combine both: use MCP for Kiro-side sending, enhance bot for user-initiated retr
 **Phase 2: Usage Pattern**
 ```
 User: "Build the Android APK"
-Kiro: "Building... Done. APK created at /path/to/app.apk"
-Kiro: [automatically sends file via MCP]
+Goose: "Building... Done. APK created at /path/to/app.apk"
+Goose: [automatically sends file via MCP]
 ```
 
 ## Benefits
@@ -79,7 +79,7 @@ Kiro: [automatically sends file via MCP]
 - Extensible to other file types and platforms
 
 ## Next Steps
-1. Test `simple-telegram-mcp` compatibility with Kiro CLI
+1. Test `simple-telegram-mcp` compatibility with Goose CLI
 2. Configure MCP server with bot credentials
 3. Define file sending triggers and patterns
 4. Implement fallback mechanisms for large files

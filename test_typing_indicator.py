@@ -28,7 +28,7 @@ def monitor_logs(duration=30):
         "sudo",
         "journalctl",
         "-u",
-        "telegram-kiro-bot.service",
+        "telegram-goose-bot.service",
         "-f",
         "--since",
         "now",
@@ -110,14 +110,14 @@ if __name__ == "__main__":
 
     # Check if bot is running
     result = subprocess.run(
-        ["sudo", "systemctl", "is-active", "telegram-kiro-bot"],
+        ["sudo", "systemctl", "is-active", "telegram-goose-bot"],
         capture_output=True,
         text=True,
     )
 
     if result.stdout.strip() != "active":
         print("❌ Bot service is not running!")
-        print("Start it with: sudo systemctl start telegram-kiro-bot")
+        print("Start it with: sudo systemctl start telegram-goose-bot")
         sys.exit(1)
 
     print("✅ Bot service is running")

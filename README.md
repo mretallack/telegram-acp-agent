@@ -1,10 +1,10 @@
-# Telegram Kiro Bot
+# Telegram Goose Bot
 
-A Python service that bridges Telegram with Kiro CLI, maintaining persistent conversation context and providing agent management capabilities.
+A Python service that bridges Telegram with Goose CLI, maintaining persistent conversation context and providing agent management capabilities.
 
 ## ⚠️ Security Warning
 
-**This bot automatically approves tool execution requests from Kiro.** Kiro can execute commands, modify files, and access your system resources. Only use this bot:
+**This bot automatically approves tool execution requests from Goose.** Goose can execute commands, modify files, and access your system resources. Only use this bot:
 - On systems you control
 - With trusted Telegram users (configure `authorized_user` in settings)
 - When you understand the security implications
@@ -13,12 +13,12 @@ A Python service that bridges Telegram with Kiro CLI, maintaining persistent con
 
 ## Features
 
-- **Persistent Session**: Maintains Kiro CLI sessions with structured communication
-- **Agent Management**: Create, switch, and manage Kiro agents with isolated contexts
+- **Persistent Session**: Maintains Goose CLI sessions with structured communication
+- **Agent Management**: Create, switch, and manage Goose agents with isolated contexts
 - **Conversation Persistence**: Save and restore conversation sessions with session IDs
-- **Attachment Support**: Send images (native ACP support) and documents to Kiro
+- **Attachment Support**: Send images (native ACP support) and documents to Goose
 - **Voice Messages**: Automatic speech-to-text transcription via Whisper
-- **Real-time Progress**: See tool execution status as Kiro works
+- **Real-time Progress**: See tool execution status as Goose works
 - **Clean Communication**: Structured JSON-RPC protocol (no ANSI parsing needed)
 - **User Filtering**: Only responds to authorized user (configurable)
 - **Error Handling**: Robust error handling and automatic recovery
@@ -26,24 +26,24 @@ A Python service that bridges Telegram with Kiro CLI, maintaining persistent con
 
 ## Real-time Progress Updates
 
-The bot shows what Kiro is doing in real-time:
+The bot shows what Goose is doing in real-time:
 - **Tool Execution**: "🔧 Execute Bash..." when running commands
 - **Command Output**: Stdout/stderr from executed commands (truncated if >2000 bytes)
 - **File Operations**: "🔧 Fs Read..." when reading files
 - **Progress Indicators**: Typing indicators during long operations
 
-This helps you understand what Kiro is working on during longer tasks.
+This helps you understand what Goose is working on during longer tasks.
 
 **Command Output Behavior**: When you run a command, you'll see:
 1. Tool execution notification (e.g., "🔧 Running: echo hello")
 2. Command stdout/stderr output (if any)
-3. Kiro's summary/analysis of the result
+3. Goose's summary/analysis of the result
 
 Long outputs are automatically truncated to show the first 1000 and last 1000 bytes.
 
 ## Attachment Support
 
-Send images and documents directly to Kiro for analysis, code review, or processing.
+Send images and documents directly to Goose for analysis, code review, or processing.
 
 ### Supported File Types
 - **Photos**: JPEG, PNG, WebP (up to 10 MB)
@@ -54,14 +54,14 @@ Simply send a photo or document to the bot with an optional caption:
 ```
 [Send image with caption: "What's in this image?"]
 [Send Python file with caption: "Review this code"]
-[Send document without caption - Kiro will receive the file path]
+[Send document without caption - Goose will receive the file path]
 ```
 
 ### Configuration
 Set the attachments directory in `settings.ini`:
 ```ini
 [bot]
-attachments_dir = ~/.kiro/bot_attachments
+attachments_dir = ~/.goose/bot_attachments
 ```
 
 Files are saved with the pattern: `{timestamp}_{user_id}_{filename}`
@@ -70,20 +70,20 @@ Files are saved with the pattern: `{timestamp}_{user_id}_{filename}`
 1. Bot downloads the attachment to the configured directory
 2. For images: Sends via ACP's native image content type
 3. For documents: Includes file path in message text
-4. Kiro can read, analyze, or process the file as needed
+4. Goose can read, analyze, or process the file as needed
 
 **Note**: Image attachments use ACP's native image content type for better integration.
 
 ## Voice Messages
 
-Send voice messages or audio files to the bot — they are automatically transcribed to text and sent to Kiro.
+Send voice messages or audio files to the bot — they are automatically transcribed to text and sent to Goose.
 
 ### How It Works
 1. Send a voice message or audio file to the bot
 2. Bot shows "🎤 Transcribing..." while processing
 3. Speech is transcribed using [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (Whisper small model, int8, CPU)
-4. Transcription is sent to Kiro as: `[Voice message transcription (Xs)]: "your words"`
-5. Kiro responds to the transcribed text
+4. Transcription is sent to Goose as: `[Voice message transcription (Xs)]: "your words"`
+5. Goose responds to the transcribed text
 
 ### Supported Formats
 - **Voice messages**: Telegram's native voice recordings (OGG/Opus)
@@ -146,15 +146,15 @@ Examples:
 
 ### Limitations
 
-**Usage/Billing Command**: The `/usage` command is listed in `_kiro.dev/commands/available` but does not work via `_kiro.dev/commands/execute` in ACP mode. When called, kiro-cli returns zero messages (no RPC response, no notifications), causing the request to hang indefinitely until timeout. This is likely a terminal-only UI command. To check your account usage and credits, use the regular CLI:
+**Usage/Billing Command**: The `/usage` command is listed in `_goose.dev/commands/available` but does not work via `_goose.dev/commands/execute` in ACP mode. When called, goose returns zero messages (no RPC response, no notifications), causing the request to hang indefinitely until timeout. This is likely a terminal-only UI command. To check your account usage and credits, use the regular CLI:
 ```bash
-kiro-cli chat
+goose chat
 /usage
 ```
 
 ### Configuring Agent Working Directories
 
-Each agent can be configured to start in a specific project directory. Edit `~/.kiro/bot_agent_config.json`:
+Each agent can be configured to start in a specific project directory. Edit `~/.goose/bot_agent_config.json`:
 
 ```json
 {
@@ -162,45 +162,45 @@ Each agent can be configured to start in a specific project directory. Edit `~/.
     "facebook_dev": {
       "working_directory": "/home/mark/git/facebook"
     },
-    "kiro_default": {
-      "working_directory": "/home/mark/git/remote-kiro"
+    "goose_default": {
+      "working_directory": "/home/mark/git/telegram-goose-bot"
     }
   },
-  "default_directory": "/home/mark/git/remote-kiro"
+  "default_directory": "/home/mark/git/telegram-goose-bot"
 }
 ```
 
-When you switch to an agent, Kiro will start in that agent's configured directory. This allows different agents to work on different projects without manual directory changes.
+When you switch to an agent, Goose will start in that agent's configured directory. This allows different agents to work on different projects without manual directory changes.
 
 ## How Multi-Agent System Works
 
-The bot maintains multiple Kiro CLI processes simultaneously, one for each agent:
+The bot maintains multiple Goose CLI processes simultaneously, one for each agent:
 
-1. **Independent Sessions**: Each agent runs in its own Kiro CLI process with separate context
+1. **Independent Sessions**: Each agent runs in its own Goose CLI process with separate context
 2. **Agent Switching**: Use `\agent swap <name>` to switch between active agents
 3. **Lazy Loading**: Agent processes are only started when first accessed
 4. **Working Directories**: Each agent starts in its configured project directory
-5. **Automatic Mode Switching**: When switching agents, the bot automatically sets the kiro-cli mode to match the agent name (if a matching mode exists)
+5. **Automatic Mode Switching**: When switching agents, the bot automatically sets the goose mode to match the agent name (if a matching mode exists)
 6. **Context Isolation**: Conversations and context are isolated per agent
 7. **Concurrent Agents**: Multiple agents can be running simultaneously, but only one is active at a time
 
 ### Automatic Mode Switching
 
 When you swap to an agent (e.g., `\agent swap facebook`), the bot automatically:
-1. Switches to the agent's kiro-cli process
+1. Switches to the agent's goose process
 2. Changes to the agent's working directory
-3. Sets the kiro-cli mode to match the agent name (if available)
+3. Sets the goose mode to match the agent name (if available)
 
 This gives each agent the right context automatically. If no matching mode exists, the agent continues with the default mode.
 
 ### Agent Lifecycle
 - **Creation**: `\agent create <name>` - Interactive flow to define agent properties
-- **Activation**: First message to an agent or `\agent swap` starts its Kiro process
+- **Activation**: First message to an agent or `\agent swap` starts its Goose process
 - **Switching**: `\agent swap <name>` switches active agent without stopping others
 - **Deletion**: `\agent delete <name>` removes agent definition (stops process if running)
 
 ### Use Cases
-- **Project Separation**: Different agents for different codebases (e.g., `facebook_dev`, `kiro_default`)
+- **Project Separation**: Different agents for different codebases (e.g., `facebook_dev`, `goose_default`)
 - **Role Specialization**: Agents with different instructions for specific tasks
 - **Context Management**: Keep separate conversation contexts for different projects
 
@@ -223,7 +223,7 @@ Add to `settings.ini`:
 # Optional: restrict to specific group ID
 # group_id = -1003610178913
 # Path to topic-agent mapping cache
-topic_cache = ~/.kiro/topic_agent_map.json
+topic_cache = ~/.goose/topic_agent_map.json
 ```
 
 ### Topic Commands
@@ -253,13 +253,13 @@ These commands work within group topics and are scoped to the topic's agent:
 
 Topic names should match agent names. For example:
 - Topic "facebook_dev" → agent `facebook_dev`
-- Topic "Kiro Default" → agent `kiro_default` (case-insensitive, spaces/underscores normalized)
+- Topic "Goose Default" → agent `goose_default` (case-insensitive, spaces/underscores normalized)
 
 If automatic matching fails, use `\topic register <agent>` to manually map a topic.
 
 ## Agent File Structure
 
-Custom agents are stored as JSON files in `~/.kiro/agents/`:
+Custom agents are stored as JSON files in `~/.goose/agents/`:
 ```json
 {
   "name": "agent_name",
@@ -273,32 +273,32 @@ Custom agents are stored as JSON files in `~/.kiro/agents/`:
 
 ## Conversation State Structure
 
-Conversation states are stored in `~/.kiro/bot_conversations/`:
+Conversation states are stored in `~/.goose/bot_conversations/`:
 ```json
 {
   "current_agent": "agent_name",
   "session_id": "sess_abc123",
   "timestamp": 1704067200.0,
-  "working_directory": "/home/mark/git/remote-kiro"
+  "working_directory": "/home/mark/git/telegram-goose-bot"
 }
 ```
 
-Sessions are automatically persisted by kiro-cli to `~/.kiro/sessions/cli/`.
+Sessions are automatically persisted by goose to `~/.goose/sessions/cli/`.
 
 ## Send File Skill
 
-Kiro can send files directly to you in Telegram. This works two ways:
+Goose can send files directly to you in Telegram. This works two ways:
 
 1. **Via `\send` command**: Type `\send /path/to/file` in chat
-2. **Via Kiro skill**: Kiro autonomously sends files when you ask (e.g., "send me that report")
+2. **Via Goose skill**: Goose autonomously sends files when you ask (e.g., "send me that report")
 
 ### Skill Setup
 
 The send-file skill is not included in git — create it manually:
 
 ```bash
-mkdir -p ~/.kiro/skills/send-file
-cat > ~/.kiro/skills/send-file/SKILL.md << 'EOF'
+mkdir -p ~/.goose/skills/send-file
+cat > ~/.goose/skills/send-file/SKILL.md << 'EOF'
 ---
 name: send-file
 description: Send a file to the user via Telegram. Use when you need to deliver a generated file, export, or any file to the user.
@@ -337,7 +337,7 @@ EOF
 
 ### How It Works
 
-When Kiro executes `echo "SEND_FILE:/path/to/file"`, the bot intercepts the `SEND_FILE:` pattern in stdout and sends the file via `bot.send_document()`. The file is never included in Kiro's response text.
+When Goose executes `echo "SEND_FILE:/path/to/file"`, the bot intercepts the `SEND_FILE:` pattern in stdout and sends the file via `bot.send_document()`. The file is never included in Goose's response text.
 
 ## Setup
 
@@ -376,19 +376,19 @@ make service-stop
 
 ## How It Works
 
-1. **Persistent Kiro Session**: Starts `kiro-cli acp` and maintains JSON-RPC communication
+1. **Persistent Goose Session**: Starts `goose acp` and maintains JSON-RPC communication
 2. **Structured Protocol**: Uses Agent Client Protocol (ACP) for reliable message exchange
 3. **Permission Handling**: Automatically approves tool execution requests via ACP protocol
 4. **Session Management**: Explicit session IDs for save/load functionality
 5. **Streaming Updates**: Receives real-time notifications for tool calls and progress
 6. **Smart Response Buffering**: Accumulates message chunks until turn completion
 7. **Message Processing**: Sends user messages via JSON-RPC, receives structured responses
-8. **Queue-Based Architecture**: Async Telegram layer communicates with sync Kiro via message queue
+8. **Queue-Based Architecture**: Async Telegram layer communicates with sync Goose via message queue
 9. **Telegram Integration**: Uses python-telegram-bot library with thread-safe async messaging
 
 ## Advantages over Text-Based Communication
 
-- **True Persistence**: Single Kiro session maintains full context
+- **True Persistence**: Single Goose ACP session maintains full context
 - **Better Performance**: No process startup overhead per message
 - **Structured Communication**: JSON-RPC eliminates text parsing and ANSI stripping
 - **Real-time Progress**: See tool execution status as it happens
@@ -401,7 +401,7 @@ make service-stop
 
 View logs with:
 ```bash
-journalctl --user-unit telegram-kiro-bot -f
+journalctl --user-unit telegram-goose-bot -f
 ```
 
 ## TODO / Future Enhancements
@@ -420,12 +420,12 @@ journalctl --user-unit telegram-kiro-bot -f
 ### Error Handling
 
 - ✅ **Message too long splitting**
-  - Problem: Kiro sometimes returns responses that exceed Telegram's 4096 character message limit, causing the message to fail to send entirely.
+  - Problem: Goose sometimes returns responses that exceed Telegram's 4096 character message limit, causing the message to fail to send entirely.
   - Found: `telegram.error.BadRequest: Message is too long` in journal logs (Apr 12 18:20).
   - Solution: Detect message length before sending and split into multiple sequential messages, preserving markdown formatting across chunks.
 
 - ✅ **Prompt timeout handling**
-  - Problem: Long-running Kiro tasks (e.g. complex code generation, docker builds) exceed the prompt timeout, causing the request to fail and the user to get no response.
+  - Problem: Long-running Goose tasks (e.g. complex code generation, docker builds) exceed the prompt timeout, causing the request to fail and the user to get no response.
   - Found: `Exception: Timeout waiting for response to session/prompt` — ~20 occurrences across Apr 11–12, the most frequent error in the logs.
   - Solution: Make the prompt timeout configurable in `settings.ini`. Consider increasing the default, and send the user a notification when a timeout occurs rather than silently failing.
 
@@ -435,7 +435,7 @@ journalctl --user-unit telegram-kiro-bot -f
   - Solution: Track prompt state and prevent sending a new prompt while one is in-flight. Queue incoming messages and notify the user that a previous request is still processing. Optionally cancel the in-flight prompt before retrying.
 
 - ✅ **Monthly usage limit handling**
-  - Problem: When the Kiro monthly usage limit is reached, every prompt fails with an unhandled exception. The bot keeps trying and failing on each user message.
+  - Problem: When the Goose monthly usage limit is reached, every prompt fails with an unhandled exception. The bot keeps trying and failing on each user message.
   - Found: `Exception: JSON-RPC error: ... 'The monthly usage limit has been reached'` — 4 occurrences in quick succession (Apr 12 17:44–17:49) before the service was restarted.
   - Solution: Detect this specific error, notify the user with a friendly message ("Monthly usage limit reached — try again next month or check your plan"), and suppress further prompt attempts until the session is restarted or a configurable cooldown expires.
 
@@ -467,12 +467,12 @@ journalctl --user-unit telegram-kiro-bot -f
 - **Message formatting options**: Markdown vs HTML, code highlighting preferences
 
 ### ACP Notifications (Unhandled)
-- **Inbox notifications** (`_kiro.dev/session/inbox_notification`): Shows when subagent results are delivered to the main agent (`messageCount`, `senders`). Could display "📬 Subagent results received (3)" so the user knows the main agent is processing subagent output.
-- **Tool call chunks** (`_kiro.dev/session/update` → `tool_call_chunk`): Streaming tool output from subagents (file contents, command output as it runs). Very noisy (~50/min during active subagent work). Could optionally show live subagent output, but would flood the chat without filtering/summarisation.
-- **Commands available** (`_kiro.dev/commands/available`): Full list of slash commands with descriptions, sent after session creation. Could validate commands in `\help`, provide autocomplete suggestions, or detect typos in user commands.
+- **Inbox notifications** (`_goose.dev/session/inbox_notification`): Shows when subagent results are delivered to the main agent (`messageCount`, `senders`). Could display "📬 Subagent results received (3)" so the user knows the main agent is processing subagent output.
+- **Tool call chunks** (`_goose.dev/session/update` → `tool_call_chunk`): Streaming tool output from subagents (file contents, command output as it runs). Very noisy (~50/min during active subagent work). Could optionally show live subagent output, but would flood the chat without filtering/summarisation.
+- **Commands available** (`_goose.dev/commands/available`): Full list of slash commands with descriptions, sent after session creation. Could validate commands in `\help`, provide autocomplete suggestions, or detect typos in user commands.
 
 ### ACP Features (Not Yet Implemented)
-- **`/chat new`**: Start fresh conversation without restarting the kiro-cli process. Would avoid the full session restart overhead.
+- **`/chat new`**: Start fresh conversation without restarting the goose process. Would avoid the full session restart overhead.
 - **`/spawn`**: Explicitly kick off parallel agent sessions from Telegram. Fire-and-forget background tasks with completion notifications.
 - **`/transcript`**: Review conversation history. Could be exposed as a `\transcript` bot command.
 - **`_session/terminate`**: ✅ Implemented as `\subagents kill <name>`

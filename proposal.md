@@ -1,9 +1,9 @@
-# Telegram Kiro Bot Enhancement Proposal
+# Telegram Goose Bot Enhancement Proposal
 
 ## Issues to Address
 
 ### 1. Silent Input Waiting
-When Kiro waits for user input (y/n prompts, confirmations), Telegram shows no indication. User doesn't know system is waiting.
+When Goose waits for user input (y/n prompts, confirmations), Telegram shows no indication. User doesn't know system is waiting.
 
 ### 2. Constant Confirmations  
 Bot asks for y/n confirmations on all actions, creating friction.
@@ -14,7 +14,7 @@ Long outputs get cut off at beginning, missing important end results.
 ## Solutions
 
 ### 1. Input Prompt Detection
-Detect when Kiro is waiting and send immediate notification:
+Detect when Goose is waiting and send immediate notification:
 ```python
 def detect_input_prompt(self, line):
     patterns = [r'\(y/n\)', r'\[y/N\]', r'Trust this action\?', r'Continue\?']
