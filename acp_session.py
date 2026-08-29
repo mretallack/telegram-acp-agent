@@ -122,7 +122,10 @@ class ACPSession:
 
         if method == "session/update":
             self._handle_session_update(params.get("update", {}))
-        elif method in ["_kiro.dev/commands/available", "_goose.dev/commands/available"]:
+        elif method in [
+            "_kiro.dev/commands/available",
+            "_goose.dev/commands/available",
+        ]:
             self._handle_commands_available(params)
         elif method in ["_kiro.dev/compaction/status", "_goose.dev/compaction/status"]:
             self._handle_compaction_status(params)
@@ -138,11 +141,17 @@ class ACPSession:
             logger.debug(f"ACPSession: Metadata: {params}")
             for callback in self.metadata_callbacks:
                 callback(params)
-        elif method in ["_kiro.dev/subagent/list_update", "_goose.dev/subagent/list_update"]:
+        elif method in [
+            "_kiro.dev/subagent/list_update",
+            "_goose.dev/subagent/list_update",
+        ]:
             logger.debug(f"ACPSession: Subagent list update")
             for callback in self.subagent_callbacks:
                 callback(params)
-        elif method in ["_kiro.dev/session/inbox_notification", "_goose.dev/session/inbox_notification"]:
+        elif method in [
+            "_kiro.dev/session/inbox_notification",
+            "_goose.dev/session/inbox_notification",
+        ]:
             logger.debug(f"ACPSession: Inbox notification: {params}")
         elif method.startswith("_kiro.dev/") or method.startswith("_goose.dev/"):
             # Unknown extension notification
@@ -204,7 +213,7 @@ class ACPSession:
                 "contextUsagePercentage": percentage,
                 "usedTokens": used,
                 "maxTokens": size,
-                "cost": update.get("cost")
+                "cost": update.get("cost"),
             }
             for callback in self.metadata_callbacks:
                 callback(metadata)

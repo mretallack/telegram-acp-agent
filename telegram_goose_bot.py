@@ -778,9 +778,9 @@ class TelegramBot:
             await context.bot.send_message(
                 chat_id=chat_id,
                 text="⚠️ The <code>\\usage</code> command is not supported in Goose ACP mode.\n"
-                     "Please use <code>\\help</code> to see available commands.",
+                "Please use <code>\\help</code> to see available commands.",
                 message_thread_id=thread_id,
-                parse_mode="HTML"
+                parse_mode="HTML",
             )
             return True
 
@@ -905,7 +905,7 @@ class TelegramBot:
             await update.message.reply_text(
                 "⚠️ The <code>\\usage</code> command is not supported in Goose ACP mode.\n"
                 "Please use <code>\\help</code> to see available commands.",
-                parse_mode="HTML"
+                parse_mode="HTML",
             )
             return True
 
@@ -1003,7 +1003,7 @@ class TelegramBot:
             print(f"[DEBUG] Intercepted chat command")
             await update.message.reply_text(
                 "⚠️ The <code>\\chat</code> command is not supported in Goose ACP mode.",
-                parse_mode="HTML"
+                parse_mode="HTML",
             )
             return True
 
@@ -1019,7 +1019,7 @@ class TelegramBot:
                 # Other /context subcommands are not supported in Goose ACP mode
                 await update.message.reply_text(
                     "⚠️ Only <code>\\context</code> (token usage summary) is supported in Goose ACP mode.",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
                 )
                 return True
 
@@ -1316,8 +1316,6 @@ Help
         """Show all available bot commands"""
         await update.message.reply_text(self._get_help_text())
 
-
-
     async def show_models(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle intercepted /model list command"""
         if update.effective_user.id != self.authorized_user_id:
@@ -1435,8 +1433,6 @@ Help
             )
         except Exception as e:
             await update.message.reply_text(f"❌ Error deleting agent: {e}")
-
-
 
     async def handle_conversation_state(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1669,7 +1665,10 @@ Help
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         """Show current context usage"""
-        if not self.goose.active_agent or self.goose.active_agent not in self.goose.agents:
+        if (
+            not self.goose.active_agent
+            or self.goose.active_agent not in self.goose.agents
+        ):
             await update.message.reply_text("❌ No active agent")
             return
 
@@ -1682,13 +1681,14 @@ Help
         else:
             await update.message.reply_text(f"📊 Context usage: {usage:.1f}%")
 
-
-
     async def trigger_compaction(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
         """Trigger manual compaction"""
-        if not self.goose.active_agent or self.goose.active_agent not in self.goose.agents:
+        if (
+            not self.goose.active_agent
+            or self.goose.active_agent not in self.goose.agents
+        ):
             await update.message.reply_text("❌ No active agent")
             return
 

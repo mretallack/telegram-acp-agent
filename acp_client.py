@@ -25,7 +25,12 @@ logger = logging.getLogger(__name__)
 class ACPClient:
     """Manages JSON-RPC communication with goose acp subprocess."""
 
-    def __init__(self, working_directory: str, prompt_timeout: int = 600, env: Optional[Dict[str, str]] = None):
+    def __init__(
+        self,
+        working_directory: str,
+        prompt_timeout: int = 600,
+        env: Optional[Dict[str, str]] = None,
+    ):
         self.working_directory = working_directory
         self.env = env
         self.process: Optional[subprocess.Popen] = None
@@ -39,6 +44,7 @@ class ACPClient:
     def start(self) -> None:
         """Start goose acp subprocess and reader thread."""
         import os
+
         spawn_env = os.environ.copy()
         if self.env:
             spawn_env.update(self.env)
@@ -85,9 +91,7 @@ class ACPClient:
                         f"ACPClient: FULL permission request: {json.dumps(message, indent=2)}"
                     )
                 else:
-                    logger.info(
-                        f"ACPClient: Received from goose: {line.strip()[:200]}"
-                    )
+                    logger.info(f"ACPClient: Received from goose: {line.strip()[:200]}")
 
                 self._route_message(message)
 

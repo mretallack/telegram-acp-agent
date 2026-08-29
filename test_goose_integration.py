@@ -2,6 +2,7 @@ import sys
 import logging
 import json
 import time
+
 sys.path.append("/home/mark/git/telegram-goose-bot")
 
 logging.basicConfig(level=logging.INFO)
@@ -14,9 +15,11 @@ session_manager = GooseSessionACP()
 # Set current chat ID for sync updates
 session_manager.set_chat_id(123456789)
 
+
 # Define mock send function
 def mock_send(chat_id, text, **kwargs):
     print(f"\n[TELEGRAM SEND to {chat_id}]: {text}\n")
+
 
 session_manager.send_to_telegram = mock_send
 
