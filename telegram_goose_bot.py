@@ -530,7 +530,7 @@ class TelegramBot:
             # Fallback: try getForumTopicIconSticker or ask user to register
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="❓ Can't determine topic name. Use `\\topic register <agent>` in this topic to map it.",
+                text="❓ Can't determine topic name. Use <code>\\topic register &lt;agent&gt;</code> in this topic to map it.",
                 message_thread_id=thread_id,
                 parse_mode="HTML",
             )
