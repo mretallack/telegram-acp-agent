@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=PATH=/home/mark/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=/home/mark/git/telegram-goose-bot
 ExecStart=/home/mark/git/telegram-goose-bot/venv/bin/python3 /home/mark/git/telegram-goose-bot/telegram_goose_bot.py
 Restart=always

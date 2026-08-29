@@ -727,7 +727,10 @@ class TelegramBot:
                                 mid = model.get("modelId", "unknown")
                                 desc = model.get("description", "")
                                 marker = "→ " if mid == current_model else "  "
-                                response += f"{marker}<code>{mid}</code> - {desc}\n"
+                                if desc:
+                                    response += f"{marker}<code>{mid}</code> - {desc}\n"
+                                else:
+                                    response += f"{marker}<code>{mid}</code>\n"
                             await context.bot.send_message(
                                 chat_id=chat_id,
                                 text=response,
@@ -1350,7 +1353,10 @@ Help
                 name = model.get("name", "unknown")
                 description = model.get("description", "")
                 marker = "→ " if model_id == current_model else "  "
-                response += f"{marker}<code>{model_id}</code> - {description}\n"
+                if description:
+                    response += f"{marker}<code>{model_id}</code> - {description}\n"
+                else:
+                    response += f"{marker}<code>{model_id}</code>\n"
 
             await update.message.reply_text(response, parse_mode="HTML")
         except Exception as e:
@@ -1675,11 +1681,21 @@ Help
         agent_data = self.goose.agents[self.goose.active_agent]
         session_id = agent_data["session_id"]
         usage = self.goose.context_tracker.get_usage(session_id)
+        cost_info = self.goose.context_tracker.get_cost(session_id)
 
+        response = ""
         if usage is None:
-            await update.message.reply_text("📊 Context usage: Unknown")
+            response += "📊 <b>Context usage:</b> Unknown"
         else:
-            await update.message.reply_text(f"📊 Context usage: {usage:.1f}%")
+            response += f"📊 <b>Context usage:</b> {usage:.1f}%"
+
+        if cost_info and isinstance(cost_info, dict):
+            amount = cost_info.get("amount")
+            currency = cost_info.get("currency", "USD")
+            if amount is not None:
+                response += f"\n💰 <b>Session Cost:</b> ${amount:.4f} {currency}"
+
+        await update.message.reply_text(response, parse_mode="HTML")
 
     async def trigger_compaction(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

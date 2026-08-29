@@ -8,12 +8,21 @@ class ContextTracker:
 
     def __init__(self):
         self.usage_by_session = {}  # session_id -> percentage
+        self.cost_by_session = {}  # session_id -> cost dict or amount
         self.warned_at_80 = set()  # sessions that have been warned at 80%
         self.warned_at_90 = set()  # sessions that have been warned at 90%
 
-    def update_usage(self, session_id: str, percentage: float) -> None:
-        """Update context usage for a session."""
+    def update_usage(
+        self, session_id: str, percentage: float, cost: Optional[dict] = None
+    ) -> None:
+        """Update context usage and cost for a session."""
         self.usage_by_session[session_id] = percentage
+        if cost is not None:
+            self.cost_by_session[session_id] = cost
+
+    def get_cost(self, session_id: str) -> Optional[dict]:
+        """Get accumulated cost for a session."""
+        return self.cost_by_session.get(session_id)
 
     def get_usage(self, session_id: str) -> Optional[float]:
         """Get current context usage for a session."""

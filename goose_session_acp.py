@@ -45,6 +45,7 @@ class GooseSessionACP:
             import configparser
 
             config = configparser.ConfigParser()
+            config.optionxform = str
             config.read("settings.ini")
             if config.has_section("goose_env"):
                 self.goose_env = dict(config.items("goose_env"))
@@ -442,9 +443,12 @@ class GooseSessionACP:
             # Register metadata callback for context tracking
             def on_metadata(params):
                 context_usage = params.get("contextUsagePercentage")
+                cost_info = params.get("cost")
                 if context_usage is not None:
                     logger.debug(f"Worker: Context usage: {context_usage}%")
-                    self.context_tracker.update_usage(session_id, context_usage)
+                    self.context_tracker.update_usage(
+                        session_id, context_usage, cost=cost_info
+                    )
 
                     # Get agent data for chat_id
                     agent_data = self.agents.get(agent_name, {})
