@@ -657,13 +657,27 @@ class TelegramBot:
                 agent_data = self.goose.agents[agent_name]
                 session_id = agent_data["session_id"]
                 usage = self.goose.context_tracker.get_usage(session_id)
-                text = (
-                    f"📊 Context usage ({agent_name}): {usage:.1f}%"
-                    if usage
-                    else f"📊 Context usage ({agent_name}): Unknown"
-                )
+                cost_info = self.goose.context_tracker.get_cost(session_id)
+
+                response = ""
+                if usage is None:
+                    response += f"📊 <b>Context usage ({agent_name}):</b> Unknown"
+                else:
+                    response += f"📊 <b>Context usage ({agent_name}):</b> {usage:.1f}%"
+
+                if cost_info and isinstance(cost_info, dict):
+                    amount = cost_info.get("amount")
+                    currency = cost_info.get("currency", "USD")
+                    if amount is not None:
+                        response += (
+                            f"\n💰 <b>Session Cost:</b> ${amount:.4f} {currency}"
+                        )
+
                 await context.bot.send_message(
-                    chat_id=chat_id, text=text, message_thread_id=thread_id
+                    chat_id=chat_id,
+                    text=response,
+                    message_thread_id=thread_id,
+                    parse_mode="HTML",
                 )
             else:
                 await context.bot.send_message(
