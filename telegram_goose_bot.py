@@ -1,0 +1,1912 @@
+#!/usr/bin/env python3.12
+import configparser
+import json
+import logging
+import os
+import pty
+import re
+import select
+import signal
+import subprocess
+import threading
+import time
+from pathlib import Path
+from queue import Empty, Queue
+
+from telegram import Update
+from telegram.constants import ChatAction
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+# Import ACP session manager
+from goose_session_acp import GooseSessionACP
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("/tmp/telegram_goose_bot.log"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
+
+# Use ACP-based session manager
+GooseSession = GooseSessionACP
+
+
+class TelegramBot:
+    def __init__(
+        self,
+        token,
+        authorized_user_id,
+        attachments_dir=None,
+        chunk_timeout=2.0,
+        typing_refresh_interval=4.0,
+        prompt_timeout=600,
+        group_id=None,
+        topic_cache_path=None,
+    ):
+        self.token = token
+        self.authorized_user_id = int(authorized_user_id)
+        self.attachments_dir = Path(
+            attachments_dir or "~/.goose/bot_attachments"
+        ).expanduser()
+        self._setup_attachments_dir()
+        self.goose = GooseSessionACP()
+
+        # Configure timeouts
+        self.goose.chunk_timeout = chunk_timeout
+        self.goose.typing_refresh_interval = typing_refresh_interval
+        self.goose.prompt_timeout = prompt_timeout
+
+        # Group topic configuration
+        self.group_id = group_id
+        self._topic_cache_path = Path(
+            topic_cache_path or "~/.goose/topic_agent_map.json"
+        ).expanduser()
+        self._topic_agent_cache = {}  # thread_id (int) -> agent_name (str)
+        self._load_topic_cache()
+
+        # Whisper model for voice transcription (lazy-loaded on first use)
+        self._whisper_model = None
+
+        # Configure timeouts
+        self.goose.chunk_timeout = chunk_timeout
+        self.goose.typing_refresh_interval = typing_refresh_interval
+        self.goose.prompt_timeout = prompt_timeout
+
+        # Build application
+        self.application = Application.builder().token(token).build()
+        self.loop = None
+
+        # Set up async callback for Goose to send messages back
+        async def send_to_telegram(chat_id, text, thread_id=None):
+            kwargs = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+            if thread_id:
+                kwargs["message_thread_id"] = thread_id
+            await self.application.bot.send_message(**kwargs)
+
+        self.goose.send_to_telegram = send_to_telegram
+        self.goose.application = self.application
+
+        # Conversation state for multi-step interactions
+        self.user_states = {}  # chat_id -> state dict
+
+        # Start fresh session (load_state removed for now - will add back later)
+        print(f"[DEBUG] Starting fresh session")
+        self.goose.start_session()
+
+        # Add message and command handlers
+        self.application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
+        )
+        # Note: Agent and chat commands are handled via interception
+        # This allows backslash prefix support (\agent, \chat)
+
+        # Attachment handlers
+        self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        self.application.add_handler(
+            MessageHandler(filters.Document.ALL, self.handle_document)
+        )
+        self.application.add_handler(
+            MessageHandler(filters.VOICE | filters.AUDIO, self.handle_voice)
+        )
+
+        # Forum topic lifecycle handlers
+        self.application.add_handler(
+            MessageHandler(
+                filters.StatusUpdate.FORUM_TOPIC_CREATED,
+                self.handle_forum_topic_created,
+            )
+        )
+        self.application.add_handler(
+            MessageHandler(
+                filters.StatusUpdate.FORUM_TOPIC_EDITED, self.handle_forum_topic_edited
+            )
+        )
+
+        # Global error handler for transient network errors (Fix 5)
+        self.application.add_error_handler(self._error_handler)
+
+    @staticmethod
+    async def _error_handler(update, context):
+        """Handle errors from python-telegram-bot, suppressing transient network issues."""
+        import telegram.error
+
+        error = context.error
+        if isinstance(error, telegram.error.NetworkError):
+            logger.warning(f"Transient network error (suppressed): {error}")
+        else:
+            logger.error(f"Unhandled error: {error}", exc_info=context.error)
+
+    def _setup_attachments_dir(self):
+        """Create attachments directory if it doesn't exist"""
+        try:
+            self.attachments_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+            logger.info(f"Attachments directory ready: {self.attachments_dir}")
+        except Exception as e:
+            logger.error(f"Failed to create attachments directory: {e}")
+            raise
+
+    def _load_topic_cache(self):
+        """Load topic-agent mapping from disk."""
+        if self._topic_cache_path.exists():
+            try:
+                with open(self._topic_cache_path, "r") as f:
+                    data = json.load(f)
+                # Keys are stored as strings in JSON, convert to int
+                self._topic_agent_cache = {int(k): v for k, v in data.items()}
+                logger.info(
+                    f"Loaded topic cache: {len(self._topic_agent_cache)} entries"
+                )
+            except Exception as e:
+                logger.error(f"Failed to load topic cache: {e}")
+                self._topic_agent_cache = {}
+
+    def _save_topic_cache(self):
+        """Persist topic-agent mapping to disk."""
+        try:
+            self._topic_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._topic_cache_path, "w") as f:
+                json.dump(
+                    {str(k): v for k, v in self._topic_agent_cache.items()}, f, indent=2
+                )
+            logger.info(f"Saved topic cache: {len(self._topic_agent_cache)} entries")
+        except Exception as e:
+            logger.error(f"Failed to save topic cache: {e}")
+
+    def _get_available_agent_names(self):
+        """Get all available agent names (built-in + custom)."""
+        agents = ["goose_default"]
+        agents_dir = Path.home() / ".goose" / "agents"
+        if agents_dir.exists():
+            for f in agents_dir.glob("*.json"):
+                agents.append(f.stem)
+        return sorted(set(agents))
+
+    def _match_agent_name(self, topic_name):
+        """Case-insensitive match of topic name to agent name (spaces normalized to underscores)."""
+        available = self._get_available_agent_names()
+        lower_map = {a.lower(): a for a in available}
+        normalized = topic_name.lower().replace(" ", "_")
+        return lower_map.get(normalized)
+
+    def _sanitize_filename(self, filename):
+        """Remove dangerous characters from filename"""
+        safe = re.sub(r'[/\\:*?"<>|]', "_", filename)
+        safe = safe.replace(" ", "_")
+        return safe[:255]
+
+    def _generate_attachment_path(self, user_id, filename):
+        """Generate unique file path for attachment"""
+        timestamp = int(time.time())
+        safe_filename = self._sanitize_filename(filename)
+        unique_filename = f"{timestamp}_{user_id}_{safe_filename}"
+        return self.attachments_dir / unique_filename
+
+    def _format_attachment_message(self, caption, file_path):
+        """Format message with attachment info for Goose CLI"""
+        context = "Note: The user sent this via Telegram. The attachment was downloaded to the local filesystem at the path below."
+        if caption:
+            return f"{context}\\n\\n{caption}\\n\\nThe attachment is {file_path}"
+        return f"{context}\\n\\nThe attachment is {file_path}"
+
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle photo uploads"""
+        if update.effective_user.id != self.authorized_user_id:
+            return
+
+        try:
+            # Get highest resolution photo
+            photo = update.message.photo[-1]
+            file = await context.bot.get_file(photo.file_id)
+
+            # Generate path and download
+            user_id = update.effective_user.id
+            filename = f"photo_{photo.file_id[-8:]}.jpg"
+            file_path = self._generate_attachment_path(user_id, filename)
+
+            await file.download_to_drive(file_path)
+
+            # Resize if any dimension exceeds 2000px (Bedrock limit)
+            from PIL import Image
+
+            with Image.open(file_path) as img:
+                max_dim = max(img.size)
+                if max_dim > 2000:
+                    img.thumbnail((2000, 2000))
+                    img.save(file_path)
+                    logger.info(f"Resized photo to {img.size}")
+
+            logger.info(f"Downloaded photo to {file_path}")
+
+            # Format message and send to Goose
+            caption = update.message.caption or ""
+            message = self._format_attachment_message(caption, str(file_path))
+            message = message.replace("\n", "\\n")
+
+            chat_id = update.effective_chat.id
+            thread_id = getattr(update.message, "message_thread_id", None)
+
+            # Group topic routing
+            if update.effective_chat.type in ("group", "supergroup") and thread_id:
+                agent_name = await self._resolve_topic_agent(update, context, thread_id)
+                if agent_name:
+                    if agent_name not in self.goose.agents:
+                        self.goose.start_agent_background(agent_name=agent_name)
+                        import asyncio
+
+                        await asyncio.sleep(2)
+                    await context.bot.send_chat_action(
+                        chat_id=chat_id,
+                        action=ChatAction.TYPING,
+                        message_thread_id=thread_id,
+                    )
+                    self.goose.send_message_to_agent(
+                        agent_name, message, chat_id, thread_id
+                    )
+                return
+
+            # 1-to-1 chat
+            self.goose.set_chat_id(chat_id)
+            self.goose.last_typing_indicator = 0
+            self.goose.send_to_goose(message)
+            await update.effective_chat.send_action(ChatAction.TYPING)
+
+        except Exception as e:
+            logger.error(f"Error handling photo: {e}")
+            await update.message.reply_text(f"❌ Failed to process photo: {e}")
+
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle document uploads"""
+        if update.effective_user.id != self.authorized_user_id:
+            return
+
+        try:
+            document = update.message.document
+            file = await context.bot.get_file(document.file_id)
+
+            # Generate path and download
+            user_id = update.effective_user.id
+            filename = document.file_name or f"document_{document.file_id[-8:]}"
+            file_path = self._generate_attachment_path(user_id, filename)
+
+            await file.download_to_drive(file_path)
+            logger.info(f"Downloaded document to {file_path}")
+
+            # Format message and send to Goose
+            caption = update.message.caption or ""
+            message = self._format_attachment_message(caption, str(file_path))
+            message = message.replace("\n", "\\n")
+
+            chat_id = update.effective_chat.id
+            thread_id = getattr(update.message, "message_thread_id", None)
+
+            # Group topic routing
+            if update.effective_chat.type in ("group", "supergroup") and thread_id:
+                agent_name = await self._resolve_topic_agent(update, context, thread_id)
+                if agent_name:
+                    if agent_name not in self.goose.agents:
+                        self.goose.start_agent_background(agent_name=agent_name)
+                        import asyncio
+
+                        await asyncio.sleep(2)
+                    await context.bot.send_chat_action(
+                        chat_id=chat_id,
+                        action=ChatAction.TYPING,
+                        message_thread_id=thread_id,
+                    )
+                    self.goose.send_message_to_agent(
+                        agent_name, message, chat_id, thread_id
+                    )
+                return
+
+            # 1-to-1 chat
+            self.goose.set_chat_id(chat_id)
+            self.goose.last_typing_indicator = 0
+            self.goose.send_to_goose(message)
+            await update.effective_chat.send_action(ChatAction.TYPING)
+
+        except Exception as e:
+            logger.error(f"Error handling document: {e}")
+            await update.message.reply_text(f"❌ Failed to process document: {e}")
+
+    def _get_whisper_model(self):
+        """Lazy-load the faster-whisper model on first use."""
+        if self._whisper_model is None:
+            from faster_whisper import WhisperModel
+
+            logger.info("Loading Whisper model (small, int8)...")
+            self._whisper_model = WhisperModel(
+                "small", device="cpu", compute_type="int8"
+            )
+            logger.info("Whisper model loaded")
+        return self._whisper_model
+
+    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle voice messages and audio files — transcribe and send text to Goose."""
+        if update.effective_user.id != self.authorized_user_id:
+            return
+
+        try:
+            chat_id = update.effective_chat.id
+            thread_id = getattr(update.message, "message_thread_id", None)
+
+            # Get the voice or audio file
+            if update.message.voice:
+                voice = update.message.voice
+                file = await context.bot.get_file(voice.file_id)
+                duration = voice.duration
+                filename = f"voice_{voice.file_id[-8:]}.ogg"
+            else:
+                audio = update.message.audio
+                file = await context.bot.get_file(audio.file_id)
+                duration = audio.duration
+                filename = audio.file_name or f"audio_{audio.file_id[-8:]}.ogg"
+
+            # Download to attachments dir
+            user_id = update.effective_user.id
+            file_path = self._generate_attachment_path(user_id, filename)
+            await file.download_to_drive(file_path)
+            logger.info(f"Downloaded voice message to {file_path} ({duration}s)")
+
+            # Send transcribing indicator
+            reply_kwargs = {}
+            if thread_id:
+                reply_kwargs["message_thread_id"] = thread_id
+            status_msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text="🎤 Transcribing...",
+                **reply_kwargs,
+            )
+
+            # Transcribe in a thread to avoid blocking the event loop
+            import asyncio
+
+            loop = asyncio.get_event_loop()
+            text = await loop.run_in_executor(
+                None, self._transcribe_audio, str(file_path)
+            )
+
+            # Delete the status message
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+
+            if not text or not text.strip():
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="🎤 (empty transcription — no speech detected)",
+                    **reply_kwargs,
+                )
+                return
+
+            # Format message for Goose
+            caption = update.message.caption or ""
+            voice_context = (
+                f'[Voice message transcription ({duration}s)]: "{text.strip()}"'
+            )
+            if caption:
+                message = f"{caption}\n\n{voice_context}"
+            else:
+                message = voice_context
+            message = message.replace("\n", "\\n")
+
+            # Route to appropriate agent (group topic or 1-to-1)
+            if update.effective_chat.type in ("group", "supergroup") and thread_id:
+                agent_name = await self._resolve_topic_agent(update, context, thread_id)
+                if agent_name:
+                    if agent_name not in self.goose.agents:
+                        self.goose.start_agent_background(agent_name=agent_name)
+                        await asyncio.sleep(2)
+                    await context.bot.send_chat_action(
+                        chat_id=chat_id,
+                        action=ChatAction.TYPING,
+                        message_thread_id=thread_id,
+                    )
+                    self.goose.send_message_to_agent(
+                        agent_name, message, chat_id, thread_id
+                    )
+                return
+
+            # 1-to-1 chat
+            self.goose.set_chat_id(chat_id)
+            self.goose.last_typing_indicator = 0
+            self.goose.send_to_goose(message)
+            await update.effective_chat.send_action(ChatAction.TYPING)
+
+        except Exception as e:
+            logger.error(f"Error handling voice message: {e}")
+            await update.message.reply_text(f"❌ Failed to process voice message: {e}")
+
+    def _transcribe_audio(self, file_path):
+        """Transcribe audio file using faster-whisper. Runs in executor thread."""
+        model = self._get_whisper_model()
+        segments, info = model.transcribe(file_path, beam_size=5, vad_filter=True)
+        text = " ".join(segment.text for segment in segments)
+        logger.info(
+            f"Transcribed {file_path}: language={info.language} "
+            f"probability={info.language_probability:.2f} length={len(text)}"
+        )
+        return text
+
+    async def handle_group_message(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        thread_id_override: int = None,
+    ):
+        """Handle message in a group forum topic."""
+        thread_id = (
+            thread_id_override
+            if thread_id_override is not None
+            else update.message.message_thread_id
+        )
+        if thread_id is None:
+            return  # General topic or non-forum message
+
+        chat_id = update.effective_chat.id
+        message_text = update.message.text
+
+        # Check for intercepted commands first
+        if message_text and await self.handle_intercepted_commands_group(
+            update, context, thread_id
+        ):
+            return
+
+        # Resolve topic to agent
+        agent_name = await self._resolve_topic_agent(update, context, thread_id)
+        if not agent_name:
+            return
+
+        # Ensure agent session is running
+        if agent_name not in self.goose.agents:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🔄 Starting agent `{agent_name}`...",
+                message_thread_id=thread_id,
+                parse_mode="HTML",
+            )
+            self.goose.start_agent_background(agent_name=agent_name)
+            # Give it time to start
+            import asyncio
+
+            await asyncio.sleep(2)
+
+        # Send typing indicator
+        await context.bot.send_chat_action(
+            chat_id=chat_id, action=ChatAction.TYPING, message_thread_id=thread_id
+        )
+
+        # Route message to agent
+        text = message_text.replace("\n", "\\n") if message_text else ""
+        self.goose.send_message_to_agent(agent_name, text, chat_id, thread_id)
+
+    async def _resolve_topic_agent(self, update, context, thread_id):
+        """Resolve a topic's thread_id to an agent name."""
+        chat_id = update.effective_chat.id
+
+        # Check cache first
+        if thread_id in self._topic_agent_cache:
+            return self._topic_agent_cache[thread_id]
+
+        # Try to get topic name from the message's reply_to_message (forum_topic_created)
+        topic_name = None
+        if (
+            update.message.reply_to_message
+            and update.message.reply_to_message.forum_topic_created
+        ):
+            topic_name = update.message.reply_to_message.forum_topic_created.name
+
+        if not topic_name:
+            # Fallback: try getForumTopicIconSticker or ask user to register
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❓ Can't determine topic name. Use `\\topic register <agent>` in this topic to map it.",
+                message_thread_id=thread_id,
+                parse_mode="HTML",
+            )
+            return None
+
+        # Match to agent
+        agent_name = self._match_agent_name(topic_name)
+        if not agent_name:
+            agents = self._get_available_agent_names()
+            agents_list = "\n".join(f"• <code>{a}</code>" for a in agents)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ No agent matches topic '<b>{topic_name}</b>'\n\nAvailable agents:\n{agents_list}",
+                message_thread_id=thread_id,
+                parse_mode="HTML",
+            )
+            return None
+
+        # Cache it
+        self._topic_agent_cache[thread_id] = agent_name
+        self._save_topic_cache()
+        logger.info(f"Cached topic {thread_id} -> agent {agent_name}")
+        return agent_name
+
+    async def handle_forum_topic_created(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Handle forum topic creation — auto-populate cache if name matches an agent."""
+        if update.effective_user.id != self.authorized_user_id:
+            return
+        topic = update.message.forum_topic_created
+        if not topic:
+            return
+        thread_id = update.message.message_thread_id
+        agent_name = self._match_agent_name(topic.name)
+        if agent_name:
+            self._topic_agent_cache[thread_id] = agent_name
+            self._save_topic_cache()
+            logger.info(f"Auto-cached new topic {thread_id} -> {agent_name}")
+
+    async def handle_forum_topic_edited(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Handle forum topic rename — update or invalidate cache."""
+        if update.effective_user.id != self.authorized_user_id:
+            return
+        edited = update.message.forum_topic_edited
+        if not edited:
+            return
+        thread_id = update.message.message_thread_id
+        new_name = getattr(edited, "name", None)
+        if new_name:
+            agent_name = self._match_agent_name(new_name)
+            if agent_name:
+                self._topic_agent_cache[thread_id] = agent_name
+                self._save_topic_cache()
+                logger.info(f"Updated topic cache {thread_id} -> {agent_name}")
+            elif thread_id in self._topic_agent_cache:
+                del self._topic_agent_cache[thread_id]
+                self._save_topic_cache()
+                logger.info(
+                    f"Invalidated topic cache for {thread_id} (renamed to '{new_name}')"
+                )
+
+    async def handle_intercepted_commands_group(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, thread_id: int
+    ) -> bool:
+        """Handle bot commands in group topics. Returns True if intercepted."""
+        message_text = update.message.text.strip()
+        normalized = message_text.replace("\\", "/")
+        chat_id = update.effective_chat.id
+
+        # Topic management commands
+        if normalized.startswith("/topic"):
+            parts = normalized.split()
+            if len(parts) >= 2:
+                if parts[1] == "register" and len(parts) >= 3:
+                    agent_name = parts[2]
+                    matched = self._match_agent_name(agent_name)
+                    if matched:
+                        self._topic_agent_cache[thread_id] = matched
+                        self._save_topic_cache()
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"✅ Topic registered to agent `{matched}`",
+                            message_thread_id=thread_id,
+                            parse_mode="HTML",
+                        )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"❌ No agent named '{agent_name}'",
+                            message_thread_id=thread_id,
+                        )
+                    return True
+                elif parts[1] == "sync":
+                    await self._sync_topics(update, context)
+                    return True
+            return True
+
+        # Cancel - scoped to this topic's agent
+        if normalized == "/cancel":
+            agent_name = self._topic_agent_cache.get(thread_id)
+            if agent_name:
+                self.goose.cancel_operation(agent_name=agent_name)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🛑 Cancelling operation for `{agent_name}`...",
+                    message_thread_id=thread_id,
+                    parse_mode="HTML",
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="🛑 No agent mapped to this topic",
+                    message_thread_id=thread_id,
+                )
+            return True
+
+        # Context - scoped to topic's agent
+        if normalized == "/context":
+            agent_name = self._topic_agent_cache.get(thread_id)
+            if agent_name and agent_name in self.goose.agents:
+                agent_data = self.goose.agents[agent_name]
+                session_id = agent_data["session_id"]
+                usage = self.goose.context_tracker.get_usage(session_id)
+                text = (
+                    f"📊 Context usage ({agent_name}): {usage:.1f}%"
+                    if usage
+                    else f"📊 Context usage ({agent_name}): Unknown"
+                )
+                await context.bot.send_message(
+                    chat_id=chat_id, text=text, message_thread_id=thread_id
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ No active agent for this topic",
+                    message_thread_id=thread_id,
+                )
+            return True
+
+        # Compact - scoped to topic's agent
+        if normalized == "/compact":
+            agent_name = self._topic_agent_cache.get(thread_id)
+            if agent_name and agent_name in self.goose.agents:
+                self.goose.send_message_to_agent(
+                    agent_name, "/compact", chat_id, thread_id
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ No active agent for this topic",
+                    message_thread_id=thread_id,
+                )
+            return True
+
+        # Agent commands
+        if normalized.startswith("/agent"):
+            parts = normalized.split()
+            if len(parts) >= 2:
+                if parts[1] == "list":
+                    await self.list_agents(update, context)
+                    return True
+                elif parts[1] == "create":
+                    await self._create_agent_single_command(
+                        update, context, message_text, thread_id
+                    )
+                    return True
+                elif parts[1] == "delete" and len(parts) >= 3:
+                    await self.delete_agent(update, context, parts[2])
+                    return True
+            return True
+
+        # Send file command
+        if normalized.startswith("/send "):
+            file_path = message_text.split(maxsplit=1)[1].strip()
+            await self.send_file(update, context, file_path)
+            return True
+
+        # Model commands scoped to topic's agent
+        if normalized.startswith("/model"):
+            agent_name = self._topic_agent_cache.get(thread_id)
+            parts = normalized.split(maxsplit=1)
+            if len(parts) >= 2:
+                if parts[1] == "list":
+                    if agent_name and agent_name in self.goose.agents:
+                        models_info = self.goose.get_available_models(agent_name)
+                        if models_info:
+                            current_model = models_info.get("currentModelId", "unknown")
+                            available_models = models_info.get("availableModels", [])
+                            response = f"<b>Model ({agent_name}):</b> <code>{current_model}</code>\n\n<b>Available:</b>\n"
+                            for model in available_models:
+                                mid = model.get("modelId", "unknown")
+                                desc = model.get("description", "")
+                                marker = "→ " if mid == current_model else "  "
+                                response += f"{marker}<code>{mid}</code> - {desc}\n"
+                            await context.bot.send_message(
+                                chat_id=chat_id,
+                                text=response,
+                                message_thread_id=thread_id,
+                                parse_mode="HTML",
+                            )
+                        else:
+                            await context.bot.send_message(
+                                chat_id=chat_id,
+                                text="❌ No model info available",
+                                message_thread_id=thread_id,
+                            )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text="❌ No active agent for this topic",
+                            message_thread_id=thread_id,
+                        )
+                else:
+                    model_id = parts[1]
+                    if agent_name and agent_name in self.goose.agents:
+                        self.goose.set_model(model_id, chat_id, agent_name=agent_name)
+                    else:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text="❌ No active agent for this topic",
+                            message_thread_id=thread_id,
+                        )
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="Usage: \\model list OR \\model <model_id>",
+                    message_thread_id=thread_id,
+                )
+            return True
+
+        # Help command
+        if normalized == "/help":
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=self._get_help_text(),
+                message_thread_id=thread_id,
+            )
+            return True
+
+        return False
+
+    async def _sync_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Create forum topics for all agents that don't already have one."""
+        chat_id = update.effective_chat.id
+        thread_id = update.message.message_thread_id
+
+        agents = self._get_available_agent_names()
+        cached_agents = set(self._topic_agent_cache.values())
+
+        created = []
+        for agent in agents:
+            if agent not in cached_agents:
+                try:
+                    result = await context.bot.create_forum_topic(
+                        chat_id=chat_id, name=agent
+                    )
+                    self._topic_agent_cache[result.message_thread_id] = agent
+                    created.append(agent)
+                except Exception as e:
+                    logger.warning(f"Failed to create topic for '{agent}': {e}")
+
+        self._save_topic_cache()
+        if created:
+            msg = f"✅ Created {len(created)} topics:\n" + "\n".join(
+                f"• {a}" for a in created
+            )
+        else:
+            msg = "✅ All agents already have topics"
+        await context.bot.send_message(
+            chat_id=chat_id, text=msg, message_thread_id=thread_id
+        )
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle incoming messages"""
+        # Store the event loop for thread-safe calls
+        if not self.loop:
+            import asyncio
+
+            self.loop = asyncio.get_running_loop()
+            # Set the loop on the callback so worker thread can use it
+            self.goose.send_to_telegram.loop = self.loop
+            # Also set it on goose for typing indicator
+            self.goose.event_loop = self.loop
+            logger.info(f"Event loop set: {self.loop}")
+
+        username = update.effective_user.username
+        chat_id = update.effective_chat.id
+        print(f"[DEBUG] Received message from user: {username}")
+
+        if update.effective_user.id != self.authorized_user_id:
+            print(f"[DEBUG] Unauthorized user {username}, ignoring")
+            return
+
+        message_text = update.message.text
+
+        # Route group forum messages to topic handler
+        if update.effective_chat.type in ("group", "supergroup"):
+            if (
+                hasattr(update.message, "is_topic_message")
+                and update.message.is_topic_message
+            ):
+                await self.handle_group_message(update, context)
+                return
+            # General topic in forum groups (not marked as is_topic_message)
+            if getattr(update.effective_chat, "is_forum", False):
+                # Treat as General — route to group handler with no thread_id
+                await self.handle_group_message(update, context, thread_id_override=0)
+                return
+            # Non-forum group message, ignore
+            return
+
+        # Check if user is in a conversation state
+        if chat_id in self.user_states:
+            await self.handle_conversation_state(update, context)
+            return
+
+        print(f"[DEBUG] About to check intercepted commands for: {message_text}")
+        # Check for intercepted commands before processing
+        if await self.handle_intercepted_commands(update, context):
+            print(f"[DEBUG] Command was intercepted, returning")
+            return
+
+        print(f"[DEBUG] Command not intercepted, proceeding to goose-cli")
+
+        # Normal message processing
+        message_text = message_text.replace("\n", "\\n")
+        print(f"[DEBUG] Processing message: {message_text}")
+
+        # Show typing indicator briefly
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action=ChatAction.TYPING
+        )
+
+        # Send to Goose (non-blocking via queue)
+        print(f"[DEBUG] Sending to Goose: {message_text}")
+        self.goose.send_message(message_text, update.effective_chat.id)
+
+    async def handle_intercepted_commands(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> bool:
+        """Handle intercepted goose commands. Returns True if command was intercepted."""
+        message_text = update.message.text.strip()
+        print(f"[DEBUG] Checking interception for: {message_text}")
+
+        # Normalize backslash to forward slash for consistent processing
+        normalized_text = message_text.replace("\\", "/")
+        print(f"[DEBUG] Normalized text: {normalized_text}")
+
+        # Help command
+        if normalized_text == "/help":
+            print(f"[DEBUG] Intercepted help command")
+            await self.show_help(update, context)
+            return True
+
+        # Usage command
+        if normalized_text == "/usage":
+            print(f"[DEBUG] Intercepted usage command")
+            await self.show_usage(update, context)
+            return True
+
+        # Cancel command
+        if normalized_text == "/cancel":
+            print(f"[DEBUG] Intercepted cancel command")
+            self.goose.cancel_operation()
+            await update.message.reply_text("🛑 Cancelling operation...")
+            return True
+
+        # Subagents command
+        if normalized_text == "/subagents":
+            print(f"[DEBUG] Intercepted subagents command")
+            await self.show_subagents(update, context)
+            return True
+        if normalized_text.startswith("/subagents kill "):
+            name = normalized_text[len("/subagents kill ") :].strip()
+            if name:
+                result = self.goose.terminate_subagent(name)
+                await update.message.reply_text(result)
+            return True
+
+        # Model commands
+        if normalized_text.startswith("/model"):
+            print(f"[DEBUG] Intercepted model command")
+            parts = normalized_text.split(maxsplit=1)
+            if len(parts) == 2:
+                if parts[1] == "list":
+                    await self.show_models(update, context)
+                    return True
+                else:
+                    # Set model
+                    model_id = parts[1]
+                    await self.set_model(update, context, model_id)
+                    return True
+            else:
+                await update.message.reply_text(
+                    "Usage: \\model list OR \\model <model_id>"
+                )
+                return True
+
+        # Agent commands
+        if normalized_text.startswith("/agent"):
+            print(f"[DEBUG] Intercepted agent command")
+            parts = normalized_text.split()
+            if len(parts) == 1:
+                # Just "/agent" with no subcommand
+                await update.message.reply_text(
+                    "Usage: /agent <create|list|swap|delete> [name]"
+                )
+                return True
+            elif len(parts) >= 2:
+                subcommand = parts[1]
+                print(f"[DEBUG] Agent subcommand: {subcommand}")
+
+                if subcommand == "create":
+                    if len(parts) >= 3:
+                        agent_name = parts[2]
+                        # Check if quoted args provided (single-command format)
+                        if '"' in message_text:
+                            await self._create_agent_single_command(
+                                update, context, message_text
+                            )
+                        else:
+                            await self.start_agent_creation(update, context, agent_name)
+                    else:
+                        await update.message.reply_text(
+                            'Usage: \\agent create <name> "description" "instructions"'
+                        )
+                    return True
+
+                elif subcommand == "list":
+                    print(f"[DEBUG] Calling list_agents")
+                    await self.list_agents(update, context)
+                    return True
+
+                elif subcommand == "swap":
+                    if len(parts) >= 3:
+                        agent_name = parts[2]
+                        await self.swap_agent(update, context, agent_name)
+                    else:
+                        await update.message.reply_text("Usage: /agent swap <name>")
+                    return True
+
+                elif subcommand == "delete":
+                    if len(parts) >= 3:
+                        agent_name = parts[2]
+                        await self.delete_agent(update, context, agent_name)
+                    else:
+                        await update.message.reply_text("Usage: /agent delete <name>")
+                    return True
+
+        # Chat commands
+        elif normalized_text.startswith("/chat"):
+            print(f"[DEBUG] Intercepted chat command")
+            parts = normalized_text.split()
+            if len(parts) == 1:
+                # Just "/chat" with no subcommand
+                await update.message.reply_text("Usage: /chat <save|load|list> [name]")
+                return True
+            elif len(parts) >= 2:
+                subcommand = parts[1]
+                print(f"[DEBUG] Chat subcommand: {subcommand}")
+
+                if subcommand == "save" and len(parts) >= 3:
+                    chat_name = parts[2]
+                    await self.save_chat(update, context, chat_name)
+                    return True
+
+                elif subcommand == "load" and len(parts) >= 3:
+                    chat_name = parts[2]
+                    await self.load_chat(update, context, chat_name)
+                    return True
+
+                elif subcommand == "list":
+                    await self.list_chats(update, context)
+                    return True
+
+        # Context commands
+        elif normalized_text.startswith("/context"):
+            print(f"[DEBUG] Intercepted context command")
+            parts = normalized_text.split()
+            if len(parts) == 1:
+                # Just "/context" - show usage
+                await self.show_context_usage(update, context)
+                return True
+            elif len(parts) >= 2:
+                subcommand = parts[1]
+                if subcommand == "show":
+                    # Send as regular message, not as command
+                    self.goose.send_message("/context show", update.effective_chat.id)
+                    return True
+                elif subcommand == "clear":
+                    # Send as regular message, not as command
+                    self.goose.send_message("/context clear", update.effective_chat.id)
+                    return True
+
+        # Compact command
+        elif normalized_text == "/compact":
+            print(f"[DEBUG] Intercepted compact command")
+            # Send as regular message, not as command
+            self.goose.send_message("/compact", update.effective_chat.id)
+            return True
+
+        # Send file command
+        elif normalized_text.startswith("/send "):
+            file_path = message_text.split(maxsplit=1)[1].strip()
+            await self.send_file(update, context, file_path)
+            return True
+
+        return False
+
+    async def start_agent_creation(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, agent_name: str
+    ):
+        """Start agent creation flow from intercepted command"""
+        chat_id = update.effective_chat.id
+
+        # Validate agent name
+        valid, error_msg = self.validate_agent_name(agent_name)
+        if not valid:
+            await update.message.reply_text(f"❌ Invalid agent name: {error_msg}")
+            return
+
+        # Check if agent already exists
+        agent_file = Path.home() / ".goose" / "agents" / f"{agent_name}.json"
+        if agent_file.exists():
+            await update.message.reply_text(f"❌ Agent '{agent_name}' already exists!")
+            return
+
+        # Start conversation flow
+        self.user_states[chat_id] = {
+            "type": "create_agent",
+            "step": "description",
+            "agent_name": agent_name,
+        }
+
+        # Suppress background agent output during interactive flow
+        self.goose.suppress_output = True
+
+        await update.message.reply_text(
+            f"Creating agent '{agent_name}'...\n\nWhat's the agent description?"
+        )
+
+    async def _create_agent_single_command(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        message_text: str,
+        thread_id: int = None,
+    ):
+        """Create an agent from a single command with quoted args.
+
+        Usage: \\agent create <name> "description" "instructions"
+        """
+        chat_id = update.effective_chat.id
+
+        # Parse quoted strings from the message
+        # Strip the command prefix to get: <name> "desc" "instructions"
+        raw = message_text.strip()
+        # Remove \agent create or /agent create prefix
+        for prefix in ["\\agent create ", "/agent create "]:
+            if raw.lower().startswith(prefix.lower()):
+                raw = raw[len(prefix) :]
+                break
+
+        # Extract name (first word) and quoted strings
+        parts = raw.split(None, 1)
+        if not parts:
+            msg = '❌ Usage: \\agent create <name> "description" "instructions"'
+            await context.bot.send_message(
+                chat_id=chat_id, text=msg, message_thread_id=thread_id
+            )
+            return
+
+        agent_name = parts[0]
+
+        # Validate name
+        valid, error_msg = self.validate_agent_name(agent_name)
+        if not valid:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Invalid agent name: {error_msg}",
+                message_thread_id=thread_id,
+            )
+            return
+
+        # Check exists
+        agent_file = Path.home() / ".goose" / "agents" / f"{agent_name}.json"
+        if agent_file.exists():
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Agent '{agent_name}' already exists!",
+                message_thread_id=thread_id,
+            )
+            return
+
+        # Parse quoted description and instructions
+        remainder = parts[1] if len(parts) > 1 else ""
+        quoted = re.findall(r'"([^"]*)"', remainder)
+
+        if len(quoted) < 2:
+            msg = f'❌ Missing {"description and instructions" if len(quoted) == 0 else "instructions"}.\n\nUsage: \\agent create {agent_name} "description" "instructions"'
+            await context.bot.send_message(
+                chat_id=chat_id, text=msg, message_thread_id=thread_id
+            )
+            return
+
+        description = quoted[0]
+        instructions = quoted[1]
+
+        if not description.strip():
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ Description cannot be empty",
+                message_thread_id=thread_id,
+            )
+            return
+
+        if not instructions.strip():
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ Instructions cannot be empty",
+                message_thread_id=thread_id,
+            )
+            return
+
+        # Create the agent (same logic as handle_create_agent_flow)
+        try:
+            agent_data = self.create_agent_json(agent_name, description, instructions)
+
+            agents_dir = Path.home() / ".goose" / "agents"
+            agents_dir.mkdir(parents=True, exist_ok=True)
+
+            with open(agents_dir / f"{agent_name}.json", "w") as f:
+                json.dump(agent_data, f, indent=2)
+
+            steering_dir = agents_dir / agent_name / "steering"
+            steering_dir.mkdir(parents=True, exist_ok=True)
+            with open(steering_dir / "overview.md", "w") as f:
+                f.write(f"# {agent_name}\n\n{description}\n")
+
+            working_dir = Path("/home/mark/git") / agent_name
+            working_dir.mkdir(parents=True, exist_ok=True)
+
+            config_file = Path.home() / ".goose" / "bot_agent_config.json"
+            if config_file.exists():
+                with open(config_file, "r") as f:
+                    config = json.load(f)
+            else:
+                config = {
+                    "agents": {},
+                    "default_directory": "/home/mark/git/remote-goose",
+                }
+
+            config["agents"][agent_name] = {"working_directory": str(working_dir)}
+            with open(config_file, "w") as f:
+                json.dump(config, f, indent=2)
+
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"✅ Agent '{agent_name}' created!\n\n"
+                    f"📝 {description}\n"
+                    f"📁 {working_dir}\n\n"
+                    f"Use \\topic sync to create a topic for it."
+                ),
+                message_thread_id=thread_id,
+            )
+        except Exception as e:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Error creating agent: {e}",
+                message_thread_id=thread_id,
+            )
+
+    async def list_agents(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle intercepted /agent list command"""
+        print(f"[DEBUG] list_agents called")
+        print(f"[DEBUG] Update object: {update}")
+        print(f"[DEBUG] Context object: {context}")
+
+        # Authorization check
+        if update.effective_user.id != self.authorized_user_id:
+            print(
+                f"[DEBUG] Unauthorized user ID: {update.effective_user.id} != {self.authorized_user_id}"
+            )
+            return
+
+        try:
+            # Built-in agents
+            builtin_agents = ["goose_default", "goose_planner"]
+            print(f"[DEBUG] Built-in agents: {builtin_agents}")
+
+            # Get custom agents from ~/.goose/agents/
+            custom_agents = []
+            agents_dir = Path.home() / ".goose" / "agents"
+            print(f"[DEBUG] Checking agents dir: {agents_dir}")
+            if agents_dir.exists():
+                for agent_file in agents_dir.glob("*.json"):
+                    custom_agents.append(agent_file.stem)
+            print(f"[DEBUG] Custom agents: {custom_agents}")
+            print(f"[DEBUG] Active agent: {self.goose.active_agent}")
+
+            # Format response with HTML for tappable agent names
+            pending_agents = set(self.goose.agents_with_pending_output())
+            response = "<b>Available agents:</b>\n\n"
+            response += "<b>Built-in agents:</b>\n"
+            for agent in builtin_agents:
+                current_marker = " ← active" if agent == self.goose.active_agent else ""
+                pending_marker = " *" if agent in pending_agents else ""
+                response += f"• <code>{agent}</code>{current_marker}{pending_marker}\n"
+
+            if custom_agents:
+                response += "\n<b>Custom agents:</b>\n"
+                for agent in sorted(custom_agents):
+                    current_marker = (
+                        " ← active" if agent == self.goose.active_agent else ""
+                    )
+                    pending_marker = " *" if agent in pending_agents else ""
+                    response += (
+                        f"• <code>{agent}</code>{current_marker}{pending_marker}\n"
+                    )
+
+            if pending_agents:
+                response += "\n* = has pending output"
+
+            print(f"[DEBUG] Final response length: {len(response)}")
+            print(f"[DEBUG] Final response: '{response}'")
+            print(f"[DEBUG] About to send reply_text")
+            await update.message.reply_text(response, parse_mode="HTML")
+            print(f"[DEBUG] Reply sent successfully")
+        except Exception as e:
+            print(f"[DEBUG] Error in list_agents: {e}")
+            print(f"[DEBUG] Exception type: {type(e)}")
+            import traceback
+
+            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+            await update.message.reply_text(f"Error: {e}")
+
+    async def show_subagents(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show active subagents for the current agent."""
+        if update.effective_user.id != self.authorized_user_id:
+            return
+
+        subagents = self.goose.get_subagents()
+        if not subagents:
+            await update.message.reply_text("No active subagents")
+            return
+
+        response = f"<b>Active subagents</b> ({len(subagents)}):\n\n"
+        for sid, info in subagents.items():
+            response += f"🔀 <code>{info['name']}</code>\n"
+            if info.get("last_tool"):
+                response += f"   🔧 {info['last_tool']}\n"
+            elif info.get("query"):
+                response += f"   {info['query']}\n"
+        await update.message.reply_text(response, parse_mode="HTML")
+
+    def _get_help_text(self) -> str:
+        """Return the help text for bot commands."""
+        return """📚 Telegram Goose Bot Commands
+
+Agent Management
+\\agent list - List all agents
+\\agent swap <name> - Switch to agent
+\\agent create <name> - Create new agent
+\\agent delete <name> - Delete agent
+
+Conversation Management
+\\chat save <name> - Save conversation
+\\chat load <name> - Load conversation
+\\chat list - List saved conversations
+
+Context Management
+\\context - Show context usage
+\\context show - Detailed context info
+\\context clear - Clear context rules
+\\compact - Trigger compaction
+
+Model Management
+\\model list - List available models
+\\model <model_id> - Set model
+
+Operation Control
+\\cancel - Cancel current operation
+\\subagents - Show active subagents
+\\subagents kill <name> - Terminate a subagent
+
+Help
+\\help - Show this help message
+"""
+
+    async def show_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show all available bot commands"""
+        await update.message.reply_text(self._get_help_text())
+
+    async def show_usage(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle intercepted /usage command - show credits and billing info"""
+        if update.effective_user.id != self.authorized_user_id:
+            return
+
+        try:
+            # Send usage request to Goose CLI
+            chat_id = update.effective_chat.id
+            self.goose.send_message("/usage", chat_id)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error getting usage info: {e}")
+
+    async def show_models(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle intercepted /model list command"""
+        if update.effective_user.id != self.authorized_user_id:
+            return
+
+        try:
+            models_info = self.goose.get_available_models()
+            modes_info = self.goose.get_available_modes()
+
+            if not models_info:
+                await update.message.reply_text("❌ No model information available")
+                return
+
+            current_model = models_info.get("currentModelId", "unknown")
+            available_models = models_info.get("availableModels", [])
+
+            if not available_models:
+                await update.message.reply_text("❌ No models available")
+                return
+
+            # Format the response
+            response = f"<b>Current Model:</b> <code>{current_model}</code>\n"
+
+            # Add current mode if available
+            if modes_info:
+                current_mode = modes_info.get("currentModeId", "unknown")
+                response += f"<b>Current Mode:</b> <code>{current_mode}</code>\n"
+
+            response += f"\n<b>Available Models:</b>\n"
+            for model in available_models:
+                model_id = model.get("modelId", "unknown")
+                name = model.get("name", "unknown")
+                description = model.get("description", "")
+                marker = "→ " if model_id == current_model else "  "
+                response += f"{marker}<code>{model_id}</code> - {description}\n"
+
+            await update.message.reply_text(response, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Error showing models: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+
+    async def set_model(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, model_id: str
+    ):
+        """Handle intercepted /model <model_id> command"""
+        if update.effective_user.id != self.authorized_user_id:
+            return
+
+        try:
+            # Validate model exists
+            models_info = self.goose.get_available_models()
+            if not models_info:
+                await update.message.reply_text("❌ No model information available")
+                return
+
+            available_models = models_info.get("availableModels", [])
+            valid_model_ids = [m["modelId"] for m in available_models]
+
+            if model_id not in valid_model_ids:
+                await update.message.reply_text(
+                    f"❌ Invalid model: <code>{model_id}</code>\n\n"
+                    f"Available models: {', '.join(f'<code>{m}</code>' for m in valid_model_ids)}",
+                    parse_mode="HTML",
+                )
+                return
+
+            # Set the model
+            chat_id = update.effective_chat.id
+            self.goose.set_model(model_id, chat_id)
+
+        except Exception as e:
+            logger.error(f"Error setting model: {e}")
+            await update.message.reply_text(f"❌ Error: {e}")
+            await update.message.reply_text(f"❌ Error getting models: {e}")
+
+    async def swap_agent(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, agent_name: str
+    ):
+        """Handle intercepted /agent swap command"""
+        try:
+            # Auto-save current state
+            if not self.goose.save_state():
+                await update.message.reply_text(
+                    "⚠️ Warning: Could not save current state"
+                )
+
+            # Restart with new agent
+            await update.message.reply_text(f"🔄 Switching to agent '{agent_name}'...")
+            if self.goose.restart_with_agent(agent_name):
+                # Wait for session to initialize
+                import asyncio
+
+                await asyncio.sleep(2)
+                await update.message.reply_text(f"✅ Switched to agent '{agent_name}'")
+            else:
+                await update.message.reply_text(
+                    f"❌ Failed to switch to agent '{agent_name}'"
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error switching agent: {e}")
+
+    async def delete_agent(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, agent_name: str
+    ):
+        """Handle intercepted /agent delete command"""
+        try:
+            agent_file = Path.home() / ".goose" / "agents" / f"{agent_name}.json"
+            if not agent_file.exists():
+                await update.message.reply_text(f"❌ Agent '{agent_name}' not found!")
+                return
+
+            agent_file.unlink()
+            await update.message.reply_text(
+                f"✅ Agent '{agent_name}' deleted successfully"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error deleting agent: {e}")
+
+    async def save_chat(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_name: str
+    ):
+        """Handle intercepted /chat save command"""
+        try:
+            print(f"[DEBUG] save_chat called with name: {chat_name}")
+            if self.goose.save_conversation(chat_name):
+                await update.message.reply_text(
+                    f"✅ Conversation saved as '{chat_name}'"
+                )
+            else:
+                await update.message.reply_text(f"❌ Failed to save conversation")
+        except Exception as e:
+            print(f"[ERROR] Exception in save_chat: {e}")
+            await update.message.reply_text(f"❌ Error saving conversation: {e}")
+
+    async def load_chat(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_name: str
+    ):
+        """Handle intercepted /chat load command"""
+        try:
+            if self.goose.load_conversation(chat_name):
+                await update.message.reply_text(f"✅ Conversation '{chat_name}' loaded")
+            else:
+                await update.message.reply_text(
+                    f"❌ Failed to load conversation '{chat_name}'"
+                )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error loading conversation: {e}")
+
+    async def list_chats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle intercepted /chat list command"""
+        try:
+            conversations_dir = Path.home() / ".goose" / "bot_conversations"
+            if not conversations_dir.exists():
+                await update.message.reply_text("No saved conversations found")
+                return
+
+            chat_files = list(conversations_dir.glob("*.json"))
+            if not chat_files:
+                await update.message.reply_text("No saved conversations found")
+                return
+
+            chat_list = []
+            for chat_file in chat_files:
+                if chat_file.name != "__auto_save__.json":
+                    chat_list.append(chat_file.stem)
+
+            if chat_list:
+                await update.message.reply_text(
+                    f"Saved conversations:\n• " + "\n• ".join(sorted(chat_list))
+                )
+            else:
+                await update.message.reply_text("No saved conversations found")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error listing conversations: {e}")
+
+    async def handle_conversation_state(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Handle multi-step conversation states"""
+        chat_id = update.effective_chat.id
+        state = self.user_states[chat_id]
+        message_text = update.message.text.strip()
+
+        if state["type"] == "create_agent":
+            await self.handle_create_agent_flow(update, context, state, message_text)
+
+    async def handle_create_agent_flow(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, state, message_text
+    ):
+        """Handle the create agent conversation flow"""
+        chat_id = update.effective_chat.id
+
+        if state["step"] == "description":
+            state["description"] = message_text
+            state["step"] = "instructions"
+            await update.message.reply_text("What instructions should the agent have?")
+
+        elif state["step"] == "instructions":
+            state["instructions"] = message_text
+
+            # Create the agent JSON using template
+            agent_data = self.create_agent_json(
+                state["agent_name"], state["description"], state["instructions"]
+            )
+
+            # Save agent file
+            try:
+                agents_dir = Path.home() / ".goose" / "agents"
+                agents_dir.mkdir(parents=True, exist_ok=True)
+
+                agent_file = agents_dir / f"{state['agent_name']}.json"
+                with open(agent_file, "w") as f:
+                    json.dump(agent_data, f, indent=2)
+
+                # Create agent-specific steering directory and overview.md
+                steering_dir = agents_dir / state["agent_name"] / "steering"
+                steering_dir.mkdir(parents=True, exist_ok=True)
+
+                overview_file = steering_dir / "overview.md"
+                with open(overview_file, "w") as f:
+                    f.write(f"# {state['agent_name']}\n\n{state['description']}\n")
+
+                # Create working directory under /home/mark/git
+                working_dir = Path("/home/mark/git") / state["agent_name"]
+                working_dir.mkdir(parents=True, exist_ok=True)
+
+                # Update bot_agent_config.json
+                config_file = Path.home() / ".goose" / "bot_agent_config.json"
+                if config_file.exists():
+                    with open(config_file, "r") as f:
+                        config = json.load(f)
+                else:
+                    config = {
+                        "agents": {},
+                        "default_directory": "/home/mark/git/remote-goose",
+                    }
+
+                config["agents"][state["agent_name"]] = {
+                    "working_directory": str(working_dir)
+                }
+
+                with open(config_file, "w") as f:
+                    json.dump(config, f, indent=2)
+
+                await update.message.reply_text(
+                    f"✅ Agent '{state['agent_name']}' created successfully!\n\n"
+                    f"📝 Description: {state['description']}\n"
+                    f"🤖 Instructions: {state['instructions']}\n"
+                    f"📁 Working directory: {working_dir}\n\n"
+                    f"Use `/agent swap {state['agent_name']}` to activate it."
+                )
+
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error creating agent: {e}")
+
+            # Clear conversation state and resume output
+            del self.user_states[chat_id]
+            self.goose.suppress_output = False
+            # Flush any output that was queued during the creation flow
+            if self.goose.active_agent:
+                self.goose.flush_pending_output(self.goose.active_agent)
+
+    def validate_agent_name(self, name):
+        """Validate agent name format"""
+        if not name:
+            return False, "Agent name cannot be empty"
+        if not re.match(r"^[a-zA-Z0-9_-]+$", name):
+            return (
+                False,
+                "Agent name can only contain letters, numbers, underscores, and hyphens",
+            )
+        if len(name) > 50:
+            return False, "Agent name must be 50 characters or less"
+        return True, ""
+
+    def create_agent_json(self, name, description, instructions):
+        """Create standardized agent JSON structure"""
+        return {
+            "name": name,
+            "description": description,
+            "prompt": instructions,
+            "mcpServers": {},
+            "tools": ["*"],
+            "toolAliases": {},
+            "allowedTools": [],
+            "resources": [
+                "file://~/.goose/steering/**/*.md",
+                f"file://~/.goose/agents/{name}/steering/*.md",
+                f"file://~/git/{name}/.goose/steering/**/*.md",
+                "skill://~/.goose/skills/**/SKILL.md",
+            ],
+            "hooks": {},
+            "toolsSettings": {},
+            "useLegacyMcpJson": True,
+            "model": None,
+        }
+
+    async def create_agent(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /create_agent command"""
+        if update.effective_user.id != self.authorized_user_id:
+            return
+
+        args = context.args
+        if not args:
+            await update.message.reply_text("Usage: /create_agent <agent_name>")
+            return
+
+        agent_name = args[0]
+        chat_id = update.effective_chat.id
+
+        # Validate agent name
+        valid, error_msg = self.validate_agent_name(agent_name)
+        if not valid:
+            await update.message.reply_text(f"❌ Invalid agent name: {error_msg}")
+            return
+
+        # Check if agent already exists
+        agent_file = Path.home() / ".goose" / "agents" / f"{agent_name}.json"
+        if agent_file.exists():
+            await update.message.reply_text(f"❌ Agent '{agent_name}' already exists!")
+            return
+
+        # Start conversation flow
+        self.user_states[chat_id] = {
+            "type": "create_agent",
+            "step": "description",
+            "agent_name": agent_name,
+        }
+
+        # Suppress background agent output during interactive flow
+        self.goose.suppress_output = True
+
+        await update.message.reply_text(
+            f"Creating agent '{agent_name}'...\n\nWhat's the agent description?"
+        )
+
+    async def switch_agent(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /switch_agent command"""
+        if update.effective_user.id != self.authorized_user_id:
+            return
+
+        args = context.args
+        if not args:
+            await update.message.reply_text("Usage: /switch_agent <agent_name>")
+            return
+
+        agent_name = args[0]
+
+        try:
+            # Auto-save current state
+            if not self.goose.save_state():
+                await update.message.reply_text(
+                    "⚠️ Warning: Could not save current state"
+                )
+
+            await update.message.reply_text(f"Switching to agent '{agent_name}'...")
+
+            # Restart with new agent
+            self.goose.restart_session(agent_name)
+
+            # Verify the agent switch worked
+            if self.goose.active_agent == agent_name:
+                await update.message.reply_text(f"✅ Now using agent: {agent_name}")
+            else:
+                await update.message.reply_text(
+                    f"⚠️ Agent switch may have failed. Active agent: {self.goose.active_agent}"
+                )
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error switching agent: {e}")
+            # Try to restart with default agent as fallback
+            try:
+                self.goose.restart_session()
+                await update.message.reply_text(
+                    "🔄 Fallback: Restarted with default agent"
+                )
+            except Exception as fallback_error:
+                await update.message.reply_text(f"💥 Critical error: {fallback_error}")
+
+    def send_response_threadsafe(self, chat_id, text):
+        """Send response to Telegram from thread"""
+        print(f"[DEBUG] Thread-safe send for chat {chat_id}: {text[:100]}...")
+        if self.loop:
+            import asyncio
+
+            future = asyncio.run_coroutine_threadsafe(
+                self._send_message_async(chat_id, text), self.loop
+            )
+            # Don't wait for result to keep it non-blocking
+        else:
+            print("[DEBUG] No event loop available yet")
+
+    def send_typing_indicator_threadsafe(self, chat_id):
+        """Send typing indicator to Telegram from thread"""
+        if self.loop:
+            import asyncio
+
+            future = asyncio.run_coroutine_threadsafe(
+                self._send_typing_async(chat_id), self.loop
+            )
+            # Don't wait for result to keep it non-blocking
+
+    async def show_context_usage(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Show current context usage"""
+        if not self.goose.active_agent or self.goose.active_agent not in self.goose.agents:
+            await update.message.reply_text("❌ No active agent")
+            return
+
+        agent_data = self.goose.agents[self.goose.active_agent]
+        session_id = agent_data["session_id"]
+        usage = self.goose.context_tracker.get_usage(session_id)
+
+        if usage is None:
+            await update.message.reply_text("📊 Context usage: Unknown")
+        else:
+            await update.message.reply_text(f"📊 Context usage: {usage:.1f}%")
+
+    async def execute_context_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, command: str
+    ):
+        """Execute a /context subcommand via ACP"""
+        if not self.goose.active_agent or self.goose.active_agent not in self.goose.agents:
+            await update.message.reply_text("❌ No active agent")
+            return
+
+        agent_data = self.goose.agents[self.goose.active_agent]
+        session_id = agent_data["session_id"]
+        client = agent_data["client"]
+
+        try:
+            from text_utils import strip_ansi, truncate_message
+
+            result = client.execute_command(session_id, command)
+            output = result.get("output", "")
+
+            if output:
+                # Strip ANSI codes and truncate
+                clean_output = strip_ansi(output)
+                final_output = truncate_message(clean_output)
+                await update.message.reply_text(final_output)
+            else:
+                await update.message.reply_text("✅ Command executed")
+
+        except Exception as e:
+            logger.error(f"Error executing context command: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def trigger_compaction(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Trigger manual compaction"""
+        if not self.goose.active_agent or self.goose.active_agent not in self.goose.agents:
+            await update.message.reply_text("❌ No active agent")
+            return
+
+        agent_data = self.goose.agents[self.goose.active_agent]
+        session_id = agent_data["session_id"]
+        client = agent_data["client"]
+
+        try:
+            await update.message.reply_text("🔄 Compacting conversation...")
+            result = client.execute_command(session_id, "/compact")
+
+            # Reset warning state after compaction
+            self.goose.context_tracker.reset_warnings(session_id)
+
+            await update.message.reply_text("✅ Compaction complete")
+
+        except Exception as e:
+            logger.error(f"Error triggering compaction: {e}")
+            await update.message.reply_text(f"❌ Compaction failed: {str(e)}")
+
+    async def send_file(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str
+    ):
+        """Send a file to the user via Telegram."""
+        path = Path(file_path).expanduser()
+        if not path.is_file():
+            await update.message.reply_text(f"❌ File not found: {file_path}")
+            return
+
+        # Telegram limit is 50MB for bots
+        size = path.stat().st_size
+        if size > 50 * 1024 * 1024:
+            await update.message.reply_text(
+                f"❌ File too large ({size // (1024*1024)}MB). Telegram limit is 50MB."
+            )
+            return
+
+        try:
+            with open(path, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=f,
+                    filename=path.name,
+                    message_thread_id=update.message.message_thread_id,
+                )
+        except Exception as e:
+            logger.error(f"Error sending file {file_path}: {e}")
+            await update.message.reply_text(f"❌ Failed to send file: {e}")
+
+    async def _send_typing_async(self, chat_id):
+        """Internal async method to send typing indicator"""
+        try:
+            await self.application.bot.send_chat_action(
+                chat_id=chat_id, action=ChatAction.TYPING
+            )
+        except Exception as e:
+            print(f"[DEBUG] Error sending typing indicator: {e}")
+
+    async def _send_message_async(self, chat_id, text):
+        """Internal async method to send message"""
+        try:
+            # Show typing indicator before sending response
+            await self.application.bot.send_chat_action(
+                chat_id=chat_id, action=ChatAction.TYPING
+            )
+            await self.application.bot.send_message(
+                chat_id=chat_id, text=text, parse_mode="HTML"
+            )
+            print("[DEBUG] Response sent successfully")
+        except Exception as e:
+            print(f"[DEBUG] Error sending response: {e}")
+
+    def run(self):
+        """Start the bot"""
+        print("Telegram Goose Bot started...")
+        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    config = configparser.ConfigParser()
+    config.read("settings.ini")
+
+    TOKEN = config.get("telegram", "token")
+    AUTHORIZED_USER_ID = config.getint("bot", "authorized_user_id")
+    ATTACHMENTS_DIR = config.get(
+        "bot", "attachments_dir", fallback="~/.goose/bot_attachments"
+    )
+    CHUNK_TIMEOUT = config.getfloat("bot", "chunk_timeout", fallback=2.0)
+    TYPING_REFRESH_INTERVAL = config.getfloat(
+        "bot", "typing_refresh_interval", fallback=4.0
+    )
+    PROMPT_TIMEOUT = config.getint("bot", "prompt_timeout", fallback=600)
+
+    # Group configuration
+    GROUP_ID = (
+        config.getint("group", "group_id", fallback=None)
+        if config.has_section("group")
+        else None
+    )
+    TOPIC_CACHE = (
+        config.get("group", "topic_cache", fallback=None)
+        if config.has_section("group")
+        else None
+    )
+
+    bot = TelegramBot(
+        TOKEN,
+        AUTHORIZED_USER_ID,
+        ATTACHMENTS_DIR,
+        CHUNK_TIMEOUT,
+        TYPING_REFRESH_INTERVAL,
+        PROMPT_TIMEOUT,
+        group_id=GROUP_ID,
+        topic_cache_path=TOPIC_CACHE,
+    )
+    bot.run()
