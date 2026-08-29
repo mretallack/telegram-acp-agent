@@ -1001,28 +1001,11 @@ class TelegramBot:
         # Chat commands
         elif normalized_text.startswith("/chat"):
             print(f"[DEBUG] Intercepted chat command")
-            parts = normalized_text.split()
-            if len(parts) == 1:
-                # Just "/chat" with no subcommand
-                await update.message.reply_text("Usage: /chat <save|load|list> [name]")
-                return True
-            elif len(parts) >= 2:
-                subcommand = parts[1]
-                print(f"[DEBUG] Chat subcommand: {subcommand}")
-
-                if subcommand == "save" and len(parts) >= 3:
-                    chat_name = parts[2]
-                    await self.save_chat(update, context, chat_name)
-                    return True
-
-                elif subcommand == "load" and len(parts) >= 3:
-                    chat_name = parts[2]
-                    await self.load_chat(update, context, chat_name)
-                    return True
-
-                elif subcommand == "list":
-                    await self.list_chats(update, context)
-                    return True
+            await update.message.reply_text(
+                "⚠️ The <code>\\chat</code> command is not supported in Goose ACP mode.",
+                parse_mode="HTML"
+            )
+            return True
 
         # Context commands
         elif normalized_text.startswith("/context"):
@@ -1033,15 +1016,12 @@ class TelegramBot:
                 await self.show_context_usage(update, context)
                 return True
             elif len(parts) >= 2:
-                subcommand = parts[1]
-                if subcommand == "show":
-                    # Send as regular message, not as command
-                    self.goose.send_message("/context show", update.effective_chat.id)
-                    return True
-                elif subcommand == "clear":
-                    # Send as regular message, not as command
-                    self.goose.send_message("/context clear", update.effective_chat.id)
-                    return True
+                # Other /context subcommands are not supported in Goose ACP mode
+                await update.message.reply_text(
+                    "⚠️ Only <code>\\context</code> (token usage summary) is supported in Goose ACP mode.",
+                    parse_mode="HTML"
+                )
+                return True
 
         # Compact command
         elif normalized_text == "/compact":
@@ -1315,15 +1295,8 @@ Agent Management
 \\agent create <name> - Create new agent
 \\agent delete <name> - Delete agent
 
-Conversation Management
-\\chat save <name> - Save conversation
-\\chat load <name> - Load conversation
-\\chat list - List saved conversations
-
 Context Management
 \\context - Show context usage
-\\context show - Detailed context info
-\\context clear - Clear context rules
 \\compact - Trigger compaction
 
 Model Management
@@ -1343,17 +1316,7 @@ Help
         """Show all available bot commands"""
         await update.message.reply_text(self._get_help_text())
 
-    async def show_usage(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle intercepted /usage command - show credits and billing info"""
-        if update.effective_user.id != self.authorized_user_id:
-            return
 
-        try:
-            # Send usage request to Goose CLI
-            chat_id = update.effective_chat.id
-            self.goose.send_message("/usage", chat_id)
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error getting usage info: {e}")
 
     async def show_models(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle intercepted /model list command"""
@@ -1473,62 +1436,7 @@ Help
         except Exception as e:
             await update.message.reply_text(f"❌ Error deleting agent: {e}")
 
-    async def save_chat(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_name: str
-    ):
-        """Handle intercepted /chat save command"""
-        try:
-            print(f"[DEBUG] save_chat called with name: {chat_name}")
-            if self.goose.save_conversation(chat_name):
-                await update.message.reply_text(
-                    f"✅ Conversation saved as '{chat_name}'"
-                )
-            else:
-                await update.message.reply_text(f"❌ Failed to save conversation")
-        except Exception as e:
-            print(f"[ERROR] Exception in save_chat: {e}")
-            await update.message.reply_text(f"❌ Error saving conversation: {e}")
 
-    async def load_chat(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE, chat_name: str
-    ):
-        """Handle intercepted /chat load command"""
-        try:
-            if self.goose.load_conversation(chat_name):
-                await update.message.reply_text(f"✅ Conversation '{chat_name}' loaded")
-            else:
-                await update.message.reply_text(
-                    f"❌ Failed to load conversation '{chat_name}'"
-                )
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error loading conversation: {e}")
-
-    async def list_chats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle intercepted /chat list command"""
-        try:
-            conversations_dir = Path.home() / ".goose" / "bot_conversations"
-            if not conversations_dir.exists():
-                await update.message.reply_text("No saved conversations found")
-                return
-
-            chat_files = list(conversations_dir.glob("*.json"))
-            if not chat_files:
-                await update.message.reply_text("No saved conversations found")
-                return
-
-            chat_list = []
-            for chat_file in chat_files:
-                if chat_file.name != "__auto_save__.json":
-                    chat_list.append(chat_file.stem)
-
-            if chat_list:
-                await update.message.reply_text(
-                    f"Saved conversations:\n• " + "\n• ".join(sorted(chat_list))
-                )
-            else:
-                await update.message.reply_text("No saved conversations found")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error listing conversations: {e}")
 
     async def handle_conversation_state(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1774,35 +1682,7 @@ Help
         else:
             await update.message.reply_text(f"📊 Context usage: {usage:.1f}%")
 
-    async def execute_context_command(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE, command: str
-    ):
-        """Execute a /context subcommand via ACP"""
-        if not self.goose.active_agent or self.goose.active_agent not in self.goose.agents:
-            await update.message.reply_text("❌ No active agent")
-            return
 
-        agent_data = self.goose.agents[self.goose.active_agent]
-        session_id = agent_data["session_id"]
-        client = agent_data["client"]
-
-        try:
-            from text_utils import strip_ansi, truncate_message
-
-            result = client.execute_command(session_id, command)
-            output = result.get("output", "")
-
-            if output:
-                # Strip ANSI codes and truncate
-                clean_output = strip_ansi(output)
-                final_output = truncate_message(clean_output)
-                await update.message.reply_text(final_output)
-            else:
-                await update.message.reply_text("✅ Command executed")
-
-        except Exception as e:
-            logger.error(f"Error executing context command: {e}")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
 
     async def trigger_compaction(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

@@ -107,13 +107,6 @@ Send voice messages or audio files to the bot — they are automatically transcr
 \agent delete <name>  # Delete an existing agent
 ```
 
-### Conversation Management
-```
-\chat save <name>     # Save current conversation state
-\chat load <name>     # Load and restore a saved conversation
-\chat list            # List all saved conversations
-```
-
 ### Operation Control
 ```
 \cancel               # Cancel the current running operation (immediate response)
@@ -122,8 +115,6 @@ Send voice messages or audio files to the bot — they are automatically transcr
 ### Context Management
 ```
 \context              # Show current context usage percentage
-\context show         # Show detailed context information
-\context clear        # Clear context rules
 \compact              # Trigger manual conversation compaction
 ```
 
