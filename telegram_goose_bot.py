@@ -185,6 +185,19 @@ class TelegramBot:
     def _get_available_agent_names(self):
         """Get all available agent names (built-in + custom)."""
         agents = ["goose_default"]
+
+        # Load from bot_agent_config.json
+        config_file = Path.home() / ".goose" / "bot_agent_config.json"
+        if config_file.exists():
+            try:
+                with open(config_file, "r") as f:
+                    config = json.load(f)
+                    if "agents" in config:
+                        for name in config["agents"].keys():
+                            agents.append(name)
+            except Exception as e:
+                logger.error(f"Failed to load agent config for names: {e}")
+
         agents_dir = Path.home() / ".goose" / "agents"
         if agents_dir.exists():
             for f in agents_dir.glob("*.json"):
