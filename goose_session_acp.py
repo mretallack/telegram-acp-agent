@@ -716,11 +716,9 @@ class GooseSessionACP:
             chunks = agent_data["chunks"]
             if chunks:
                 message = "".join(chunks)
-                
+
                 # Intercept SEND_FILE: pattern in assistant message text
-                send_file_matches = re.findall(
-                    r"SEND_FILE:(.+)", message
-                )
+                send_file_matches = re.findall(r"SEND_FILE:(.+)", message)
                 if send_file_matches:
                     for file_path in send_file_matches:
                         self._send_file_to_telegram_sync(

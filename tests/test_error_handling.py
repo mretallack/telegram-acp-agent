@@ -177,7 +177,9 @@ class TestRetryLogic:
         self.kiro.send_to_telegram = self.mock_send
 
     @patch("goose_session_acp.GooseSessionACP._markdown_to_html", return_value="text")
-    @patch("goose_session_acp.GooseSessionACP._split_html_message", return_value=["text"])
+    @patch(
+        "goose_session_acp.GooseSessionACP._split_html_message", return_value=["text"]
+    )
     def test_retries_on_network_error_then_succeeds(self, mock_split, mock_md):
         future_fail = MagicMock()
         future_fail.result.side_effect = OSError("Connection reset")
@@ -192,7 +194,9 @@ class TestRetryLogic:
         # Should not raise — succeeded on retry
 
     @patch("goose_session_acp.GooseSessionACP._markdown_to_html", return_value="text")
-    @patch("goose_session_acp.GooseSessionACP._split_html_message", return_value=["text"])
+    @patch(
+        "goose_session_acp.GooseSessionACP._split_html_message", return_value=["text"]
+    )
     def test_gives_up_after_3_attempts(self, mock_split, mock_md):
         future_fail = MagicMock()
         future_fail.result.side_effect = OSError("Connection reset")
