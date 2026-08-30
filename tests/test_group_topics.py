@@ -12,7 +12,7 @@ import pytest
 @pytest.fixture
 def bot():
     """Create a TelegramBot with mocked dependencies for group topic testing."""
-    with patch("telegram_kiro_bot.KiroSessionACP") as MockKiro:
+    with patch("telegram_goose_bot.GooseSessionACP") as MockKiro:
         mock_kiro = Mock()
         MockKiro.return_value = mock_kiro
         mock_kiro.agents = {}
@@ -23,7 +23,7 @@ def bot():
         mock_kiro.context_tracker = Mock()
         mock_kiro.context_tracker.get_usage = Mock(return_value=42.5)
 
-        from telegram_kiro_bot import TelegramBot
+        from telegram_goose_bot import TelegramBot
 
         b = TelegramBot.__new__(TelegramBot)
         b.token = "fake-token"

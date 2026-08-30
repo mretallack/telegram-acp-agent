@@ -2,7 +2,7 @@
 """Basic ACP tests."""
 
 import pytest
-from kiro_session_acp import KiroSessionACP
+from goose_session_acp import GooseSessionACP
 
 from acp_client import ACPClient
 from acp_session import ACPSession
@@ -60,8 +60,8 @@ class TestACPBasic:
         assert "4" in "".join(chunks)
 
 
-class TestKiroSessionACP:
-    """KiroSessionACP manager tests."""
+class TestGooseSessionACP:
+    """GooseSessionACP manager tests."""
 
     # Removed test_manager_creation - it tests internal implementation details
     # The queue-based architecture is tested by test_pwd_flow.py

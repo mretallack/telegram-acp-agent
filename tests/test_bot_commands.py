@@ -30,11 +30,11 @@ def mock_context():
 @pytest.fixture
 def bot():
     """Create a TelegramBot with mocked dependencies."""
-    with patch("telegram_kiro_bot.KiroSessionACP") as MockKiro:
+    with patch("telegram_goose_bot.GooseSessionACP") as MockKiro:
         mock_kiro = Mock()
         MockKiro.return_value = mock_kiro
 
-        from telegram_kiro_bot import TelegramBot
+        from telegram_goose_bot import TelegramBot
 
         b = TelegramBot.__new__(TelegramBot)
         b.token = "fake-token"

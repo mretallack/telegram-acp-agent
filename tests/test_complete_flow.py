@@ -11,7 +11,7 @@ from unittest.mock import Mock
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 import pytest
-from kiro_session_acp import KiroSessionACP
+from goose_session_acp import GooseSessionACP
 
 
 @pytest.mark.asyncio
@@ -41,8 +41,8 @@ async def test_complete_flow():
     mock_bot.loop = asyncio.get_running_loop()
 
     # Create session manager
-    print("\n1. Creating KiroSessionACP...")
-    kiro = KiroSessionACP()
+    print("\n1. Creating GooseSessionACP...")
+    kiro = GooseSessionACP()
     kiro.telegram_bot = mock_bot
     kiro.current_chat_id = 12345
 

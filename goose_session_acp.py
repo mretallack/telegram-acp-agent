@@ -716,6 +716,25 @@ class GooseSessionACP:
             chunks = agent_data["chunks"]
             if chunks:
                 message = "".join(chunks)
+                
+                # Intercept SEND_FILE: pattern in assistant message text
+                send_file_matches = re.findall(
+                    r"SEND_FILE:(.+)", message
+                )
+                if send_file_matches:
+                    for file_path in send_file_matches:
+                        self._send_file_to_telegram_sync(
+                            agent_data["chat_id"],
+                            file_path.strip(),
+                            thread_id=agent_data.get("thread_id"),
+                        )
+                    # Remove SEND_FILE lines from message
+                    message = re.sub(r"SEND_FILE:.+", "", message).strip()
+
+                if not message:
+                    chunks.clear()
+                    return
+
                 logger.info(
                     f"Worker: Flushing {len(chunks)} chunks ({len(message)} chars)"
                 )

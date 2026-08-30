@@ -732,10 +732,45 @@ class TelegramBot:
                     return True
             return True
 
-        # Send file command
-        if normalized.startswith("/send "):
-            file_path = message_text.split(maxsplit=1)[1].strip()
-            await self.send_file(update, context, file_path)
+        # Subagents command
+        if normalized == "/subagents":
+            agent_name = self._topic_agent_cache.get(thread_id)
+            if agent_name and agent_name in self.goose.agents:
+                # Get subagents for this specific agent
+                subagents = self.goose.agents[agent_name].get("subagents", {})
+                if not subagents:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="No active subagents",
+                        message_thread_id=thread_id,
+                    )
+                else:
+                    response = f"<b>Active subagents ({agent_name})</b> ({len(subagents)}):\n\n"
+                    for sid, info in subagents.items():
+                        response += f"🔀 <code>{info['name']}</code>\n"
+                        if info.get("last_tool"):
+                            response += f"   🔧 {info['last_tool']}\n"
+                        elif info.get("query"):
+                            response += f"   {info['query']}\n"
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=response,
+                        message_thread_id=thread_id,
+                        parse_mode="HTML",
+                    )
+            else:
+                await self.show_subagents(update, context)
+            return True
+        if normalized.startswith("/subagents kill "):
+            name = normalized[len("/subagents kill ") :].strip()
+            if name:
+                result = self.goose.terminate_subagent(name)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=result,
+                    message_thread_id=thread_id,
+                    parse_mode="HTML",
+                )
             return True
 
         # Model commands scoped to topic's agent

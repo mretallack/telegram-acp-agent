@@ -3,13 +3,13 @@
 
 import sys
 
-from kiro_session_acp import KiroSessionACP
+from goose_session_acp import GooseSessionACP
 
 
 def test_model_list():
     print("Testing model list functionality...")
 
-    session = KiroSessionACP()
+    session = GooseSessionACP()
     session.start_session()
 
     # Wait for session to start

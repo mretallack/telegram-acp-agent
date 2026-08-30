@@ -3,7 +3,7 @@
 import queue
 import time
 
-from kiro_session_acp import KiroSessionACP
+from goose_session_acp import GooseSessionACP
 
 
 def test_mode_switch_verification():
@@ -11,7 +11,7 @@ def test_mode_switch_verification():
     print("\nTEST: Mode Switch Verification")
     print("=" * 60)
 
-    session = KiroSessionACP()
+    session = GooseSessionACP()
     responses = []
 
     def capture_response(chat_id, message, thread_id=None):

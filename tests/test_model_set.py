@@ -6,13 +6,13 @@ import sys
 import threading
 import time
 
-from kiro_session_acp import KiroSessionACP
+from goose_session_acp import GooseSessionACP
 
 
 def test_model_set():
     print("Testing model set functionality...")
 
-    session = KiroSessionACP()
+    session = GooseSessionACP()
 
     # Track messages sent to telegram
     messages_sent = []

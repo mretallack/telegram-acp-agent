@@ -2,7 +2,7 @@
 
 import time
 
-from kiro_session_acp import KiroSessionACP
+from goose_session_acp import GooseSessionACP
 
 
 def test_modes_info():
@@ -10,7 +10,7 @@ def test_modes_info():
     print("\nTEST: Modes Info")
     print("=" * 60)
 
-    session = KiroSessionACP()
+    session = GooseSessionACP()
 
     try:
         # Start with default agent

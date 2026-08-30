@@ -4,14 +4,14 @@ import threading
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-from kiro_session_acp import KiroSessionACP
+from goose_session_acp import GooseSessionACP
 
 
 class TestSplitHtmlMessage:
     """Fix 1: Message too long splitting."""
 
     def setup_method(self):
-        self.kiro = KiroSessionACP.__new__(KiroSessionACP)
+        self.kiro = GooseSessionACP.__new__(GooseSessionACP)
 
     def test_short_message_no_split(self):
         result = self.kiro._split_html_message("Hello world", 4096)
@@ -71,7 +71,7 @@ class TestPromptInFlightGuard:
     """Fix 3: Prompt already in progress guard."""
 
     def setup_method(self):
-        self.kiro = KiroSessionACP.__new__(KiroSessionACP)
+        self.kiro = GooseSessionACP.__new__(GooseSessionACP)
         self.kiro.active_agent = "test"
         self.kiro.suppress_output = False
         self.kiro.agents = {
@@ -114,7 +114,7 @@ class TestUsageLimitHandling:
     """Fix 4: Monthly usage limit handling."""
 
     def setup_method(self):
-        self.kiro = KiroSessionACP.__new__(KiroSessionACP)
+        self.kiro = GooseSessionACP.__new__(GooseSessionACP)
         self.kiro.active_agent = "test"
         self.kiro.suppress_output = False
         self.kiro.agents = {
@@ -167,7 +167,7 @@ class TestRetryLogic:
     """Fix 5: Transient network error recovery in _send_to_telegram_sync."""
 
     def setup_method(self):
-        self.kiro = KiroSessionACP.__new__(KiroSessionACP)
+        self.kiro = GooseSessionACP.__new__(GooseSessionACP)
         self.kiro.active_agent = "test"
         self.kiro.suppress_output = False
         self.kiro.agents = {"test": {"pending_output": []}}
@@ -176,8 +176,8 @@ class TestRetryLogic:
         self.mock_send.loop = MagicMock()
         self.kiro.send_to_telegram = self.mock_send
 
-    @patch("kiro_session_acp.KiroSessionACP._markdown_to_html", return_value="text")
-    @patch("kiro_session_acp.KiroSessionACP._split_html_message", return_value=["text"])
+    @patch("goose_session_acp.GooseSessionACP._markdown_to_html", return_value="text")
+    @patch("goose_session_acp.GooseSessionACP._split_html_message", return_value=["text"])
     def test_retries_on_network_error_then_succeeds(self, mock_split, mock_md):
         future_fail = MagicMock()
         future_fail.result.side_effect = OSError("Connection reset")
@@ -191,8 +191,8 @@ class TestRetryLogic:
                 self.kiro._send_to_telegram_sync(123, "text", agent_name="test")
         # Should not raise — succeeded on retry
 
-    @patch("kiro_session_acp.KiroSessionACP._markdown_to_html", return_value="text")
-    @patch("kiro_session_acp.KiroSessionACP._split_html_message", return_value=["text"])
+    @patch("goose_session_acp.GooseSessionACP._markdown_to_html", return_value="text")
+    @patch("goose_session_acp.GooseSessionACP._split_html_message", return_value=["text"])
     def test_gives_up_after_3_attempts(self, mock_split, mock_md):
         future_fail = MagicMock()
         future_fail.result.side_effect = OSError("Connection reset")

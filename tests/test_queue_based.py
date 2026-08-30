@@ -8,7 +8,7 @@ import pytest
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-from kiro_session_acp import KiroSessionACP
+from goose_session_acp import GooseSessionACP
 
 
 @pytest.mark.asyncio
@@ -29,8 +29,8 @@ async def test_queue_based():
     send_to_telegram.loop = asyncio.get_running_loop()
 
     # Create session manager
-    print("\n1. Creating KiroSessionACP...")
-    kiro = KiroSessionACP()
+    print("\n1. Creating GooseSessionACP...")
+    kiro = GooseSessionACP()
     kiro.send_to_telegram = send_to_telegram
     kiro.current_chat_id = 12345
 

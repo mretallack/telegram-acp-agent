@@ -1,4 +1,4 @@
-"""Tests for KiroSessionACP callback logic (compaction status, context alerts)."""
+"""Tests for GooseSessionACP callback logic (compaction status, context alerts)."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, Mock, patch

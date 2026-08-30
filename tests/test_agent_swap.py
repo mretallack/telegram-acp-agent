@@ -9,7 +9,7 @@ import time
 
 logging.basicConfig(level=logging.WARNING)  # Reduce noise
 
-from kiro_session_acp import KiroSessionACP
+from goose_session_acp import GooseSessionACP
 
 
 def test_agent_swap():
@@ -19,7 +19,7 @@ def test_agent_swap():
     print("=" * 80)
 
     # Create session manager
-    kiro = KiroSessionACP()
+    kiro = GooseSessionACP()
 
     # Start with default agent
     print("\n1. Starting with kiro_default")

@@ -2,7 +2,7 @@
 
 import time
 
-from kiro_session_acp import KiroSessionACP
+from goose_session_acp import GooseSessionACP
 
 
 def test_mode_switch_on_agent_swap():
@@ -10,7 +10,7 @@ def test_mode_switch_on_agent_swap():
     print("\nTEST: Mode Switch on Agent Swap")
     print("=" * 60)
 
-    session = KiroSessionACP()
+    session = GooseSessionACP()
 
     try:
         # Start with default agent

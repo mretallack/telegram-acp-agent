@@ -297,25 +297,25 @@ description: Send a file to the user via Telegram. Use when you need to deliver 
 
 # Send File to User
 
-Send a file to the user via Telegram by printing a special marker that the bot intercepts.
+Send a file to the user via Telegram by outputting the special marker `SEND_FILE:<path>` directly in your response message.
 
-## Command
+## Format
 
-```bash
-echo "SEND_FILE:/absolute/path/to/file"
+```
+SEND_FILE:/absolute/path/to/file
 ```
 
 ## Rules
 
 - Path MUST be absolute (start with `/` or use `$HOME`)
 - File must exist and be under 50MB
-- The echo output must be exactly `SEND_FILE:<path>` with no other output in the same command
+- Output the `SEND_FILE:<path>` line directly in your assistant message text (do not use shell echo)
 - Use `~` expansion is supported (e.g., `SEND_FILE:~/reports/output.pdf`)
 
 ## Example
 
-```bash
-echo "SEND_FILE:/tmp/report.pdf"
+```
+SEND_FILE:/tmp/report.pdf
 ```
 
 ## When to Use
@@ -323,12 +323,10 @@ echo "SEND_FILE:/tmp/report.pdf"
 - User asks you to send/share/deliver a file
 - You've generated a file the user needs (PDF, image, export, archive)
 - User says "send me", "give me the file", "share that file"
-EOF
-```
 
 ### How It Works
 
-When Goose executes `echo "SEND_FILE:/path/to/file"`, the bot intercepts the `SEND_FILE:` pattern in stdout and sends the file via `bot.send_document()`. The file is never included in Goose's response text.
+When Goose includes `SEND_FILE:/path/to/file` in its response message text, the bot intercepts the `SEND_FILE:` pattern and sends the file via `bot.send_document()` to the correct chat or topic. The file is removed from Goose's response text.
 
 ## Setup
 
