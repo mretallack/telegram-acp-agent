@@ -285,48 +285,16 @@ Goose can send files directly to you in Telegram. This works two ways:
 
 ### Skill Setup
 
-The send-file skill is not included in git — create it manually:
+The `send-file` skill is included in this repository under `skills/send-file/SKILL.md`. At installation time, copy it to your agents skills directory so Goose can use it:
 
 ```bash
-mkdir -p ~/.goose/skills/send-file
-cat > ~/.goose/skills/send-file/SKILL.md << 'EOF'
----
-name: send-file
-description: Send a file to the user via Telegram. Use when you need to deliver a generated file, export, or any file to the user.
----
-
-# Send File to User
-
-Send a file to the user via Telegram by outputting the special marker `SEND_FILE:<path>` directly in your response message.
-
-## Format
-
+mkdir -p ~/.agents/skills/send-file
+cp skills/send-file/SKILL.md ~/.agents/skills/send-file/SKILL.md
 ```
-SEND_FILE:/absolute/path/to/file
-```
-
-## Rules
-
-- Path MUST be absolute (start with `/` or use `$HOME`)
-- File must exist and be under 50MB
-- Output the `SEND_FILE:<path>` line directly in your assistant message text (do not use shell echo)
-- Use `~` expansion is supported (e.g., `SEND_FILE:~/reports/output.pdf`)
-
-## Example
-
-```
-SEND_FILE:/tmp/report.pdf
-```
-
-## When to Use
-
-- User asks you to send/share/deliver a file
-- You've generated a file the user needs (PDF, image, export, archive)
-- User says "send me", "give me the file", "share that file"
 
 ### How It Works
 
-When Goose includes `SEND_FILE:/path/to/file` in its response message text, the bot intercepts the `SEND_FILE:` pattern and sends the file via `bot.send_document()` to the correct chat or topic. The file is removed from Goose's response text.
+When Goose includes `SEND_FILE:/absolute/path/to/file` in its response message text (using a full raw absolute path starting with `/`), the bot intercepts the `SEND_FILE:` pattern and sends the file via `bot.send_document()` to the correct chat or topic. The file is removed from Goose's response text.
 
 ## Setup
 
