@@ -2,10 +2,10 @@
 """Basic ACP tests."""
 
 import pytest
-from goose_session_acp import GooseSessionACP
 
 from acp_client import ACPClient
 from acp_session import ACPSession
+from goose_session_acp import GooseSessionACP
 
 
 class TestACPBasic:

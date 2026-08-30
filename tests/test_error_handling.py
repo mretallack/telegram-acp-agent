@@ -4,6 +4,7 @@ import threading
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+
 from goose_session_acp import GooseSessionACP
 
 

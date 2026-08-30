@@ -11,6 +11,7 @@ from unittest.mock import Mock
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 import pytest
+
 from goose_session_acp import GooseSessionACP
 
 
