@@ -266,6 +266,12 @@ class GooseSessionACP:
             logger.info(f"Worker: Tool call: {tool_name}")
             # Don't send tool start notifications to Telegram
             # Users will see tool outputs when they complete
+            self._send_to_telegram_sync(
+                agent_data["chat_id"],
+                f"🔧 **Running:** `{tool_name}`",
+                agent_name=current_agent_name,
+                thread_id=agent_data.get("thread_id"),
+            )
 
         def on_tool_update(update):
             """Handle tool completion and send stdout/stderr."""
