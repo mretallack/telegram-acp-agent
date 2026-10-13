@@ -11,6 +11,7 @@ import logging
 import queue
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -24,6 +25,49 @@ logger = logging.getLogger(__name__)
 # per-provider model from here (and credentials from secrets.yaml), so the bot
 # defers to this config instead of injecting GOOSE_PROVIDER/GOOSE_MODEL env vars.
 GOOSE_CONFIG_PATH = Path("~/.config/goose/config.yaml").expanduser()
+
+# Telegram Bot API hard limit for bot uploads (sendDocument).
+TELEGRAM_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+# Max time to wait for an upload future before treating it as failed. Must be
+# generous: a 20MB file at ~1MB/s already takes ~21s.
+UPLOAD_TIMEOUT_SECONDS = 300.0
+
+
+def strip_fenced_code_blocks(text: str) -> str:
+    """Remove ```-fenced code blocks so quoted examples aren't parsed.
+
+    Placeholder/example lines (e.g. the send-file skill's documented
+    ``SEND_FILE:/absolute/path/to/file``) are frequently reproduced inside code
+    fences. Stripping fences before scanning for real markers prevents those
+    examples from being treated as real files to send.
+    """
+    # Handle both ``` and ~~~ fences (with optional language identifier).
+    return re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+
+
+def find_send_file_paths(text: str) -> list:
+    """Return real SEND_FILE paths from *text* (Issue B hardened parser).
+
+    Rules:
+      - Ignore content inside fenced code blocks (examples/placeholders).
+      - Match only lines that consist solely of the marker plus an absolute
+        path (``^SEND_FILE:/...$``), so prose/partial matches are ignored.
+      - Ignore obvious placeholder paths from the skill's documentation.
+    """
+    if not text:
+        return []
+
+    scrubbed = strip_fenced_code_blocks(text)
+
+    paths = []
+    for match in re.finditer(r"(?m)^[ \t]*SEND_FILE:[ \t]*(/\S+)[ \t]*$", scrubbed):
+        candidate = match.group(1).strip()
+        # Skip the documented placeholder so prose/quotations can't trigger it.
+        if candidate == "/absolute/path/to/file":
+            continue
+        paths.append(candidate)
+    return paths
 
 
 class GooseSessionACP:
@@ -426,14 +470,12 @@ class GooseSessionACP:
                     return
 
                 # Intercept SEND_FILE: pattern for Goose-initiated file sending
-                send_file_matches = re.findall(
-                    r"^SEND_FILE:(.+)$", stdout, re.MULTILINE
-                )
-                if send_file_matches:
-                    for file_path in send_file_matches:
+                send_file_paths = find_send_file_paths(stdout)
+                if send_file_paths:
+                    for file_path in send_file_paths:
                         self._send_file_to_telegram_sync(
                             agent_data["chat_id"],
-                            file_path.strip(),
+                            file_path,
                             thread_id=agent_data.get("thread_id"),
                         )
                     return
@@ -898,16 +940,18 @@ class GooseSessionACP:
                 message = "".join(chunks)
 
                 # Intercept SEND_FILE: pattern in assistant message text
-                send_file_matches = re.findall(r"SEND_FILE:(.+)", message)
-                if send_file_matches:
-                    for file_path in send_file_matches:
+                send_file_paths = find_send_file_paths(message)
+                if send_file_paths:
+                    for file_path in send_file_paths:
                         self._send_file_to_telegram_sync(
                             agent_data["chat_id"],
-                            file_path.strip(),
+                            file_path,
                             thread_id=agent_data.get("thread_id"),
                         )
                     # Remove SEND_FILE lines from message
-                    message = re.sub(r"SEND_FILE:.+", "", message).strip()
+                    message = re.sub(
+                        r"(?m)^[ \t]*SEND_FILE:[ \t]*/\S+[ \t]*$", "", message
+                    ).strip()
 
                 if not message:
                     chunks.clear()
@@ -1132,10 +1176,28 @@ class GooseSessionACP:
         else:
             logger.warning(f"No send_to_telegram callback set")
 
+    def _get_telegram_loop(self):
+        """Return the event loop that drives Telegram I/O, or None.
+
+        Prefers ``self.event_loop`` (set eagerly at application startup) and
+        falls back to the loop attached to the ``send_to_telegram`` callback.
+        Returns None when no loop is available, so callers can fail loudly
+        instead of silently scheduling work that never runs.
+        """
+        loop = getattr(self, "event_loop", None)
+        if loop is None and self.send_to_telegram is not None:
+            loop = getattr(self.send_to_telegram, "loop", None)
+        return loop
+
     def _send_file_to_telegram_sync(
         self, chat_id: int, file_path: str, thread_id: int = None
     ):
-        """Send a file to Telegram from worker thread."""
+        """Send a file to Telegram from the worker thread.
+
+        Success is logged only after Telegram returns a Message with a
+        message_id. Any failure (missing loop, non-running loop, upload error)
+        surfaces an explicit error to the user rather than a false success.
+        """
         path = Path(file_path).expanduser()
         if not path.is_file():
             self._send_to_telegram_sync(
@@ -1143,33 +1205,105 @@ class GooseSessionACP:
             )
             return
 
-        if path.stat().st_size > 50 * 1024 * 1024:
+        try:
+            size = path.stat().st_size
+        except OSError as e:
+            logger.error(f"Cannot stat file {file_path}: {e}")
+            self._send_to_telegram_sync(
+                chat_id, f"❌ Failed to send file: {e}", thread_id=thread_id
+            )
+            return
+
+        if size > TELEGRAM_MAX_UPLOAD_BYTES:
             self._send_to_telegram_sync(
                 chat_id, "❌ File too large (>50MB)", thread_id=thread_id
             )
             return
 
-        async def _send_doc():
-            kwargs = {
-                "chat_id": chat_id,
-                "document": open(path, "rb"),
-                "filename": path.name,
-            }
-            if thread_id:
-                kwargs["message_thread_id"] = thread_id
-            await self.application.bot.send_document(**kwargs)
-
-        try:
-            future = asyncio.run_coroutine_threadsafe(
-                _send_doc(), self.send_to_telegram.loop
+        if self.application is None:
+            logger.error(
+                "Error sending file %s: Telegram application not set", file_path
             )
-            future.result(timeout=30.0)
-            logger.info(f"Worker: Sent file {path.name} to Telegram")
-        except Exception as e:
-            logger.error(f"Error sending file {file_path}: {e}")
             self._send_to_telegram_sync(
-                chat_id, f"❌ Failed to send file: {e}", thread_id=thread_id
+                chat_id,
+                "❌ Failed to send file: Telegram application not available",
+                thread_id=thread_id,
             )
+            return
+
+        # Validate the loop BEFORE scheduling. A stale or non-running loop makes
+        # run_coroutine_threadsafe queue the coroutine without ever driving it,
+        # which previously produced a false "Sent file" success log.
+        loop = self._get_telegram_loop()
+        if loop is None or not loop.is_running():
+            logger.error(
+                "Cannot send file %s: Telegram event loop not available/running "
+                "(loop=%r)",
+                file_path,
+                loop,
+            )
+            self._send_to_telegram_sync(
+                chat_id,
+                "❌ Failed to send file: Telegram event loop not available",
+                thread_id=thread_id,
+            )
+            return
+
+        async def _send_doc():
+            with open(path, "rb") as document:
+                kwargs = {
+                    "chat_id": chat_id,
+                    "document": document,
+                    "filename": path.name,
+                }
+                if thread_id:
+                    kwargs["message_thread_id"] = thread_id
+                return await self.application.bot.send_document(**kwargs)
+
+        # Uploads can be slow for large files; retry a couple of times on
+        # transient timeouts/network errors before surfacing a failure.
+        result = None
+        for attempt in range(1, 4):
+            try:
+                future = asyncio.run_coroutine_threadsafe(_send_doc(), loop)
+                result = future.result(timeout=UPLOAD_TIMEOUT_SECONDS)
+                break
+            except Exception as e:
+                if attempt < 3:
+                    logger.warning(
+                        "Attempt %d/3 to send file %s failed (%s); retrying in %ds",
+                        attempt,
+                        file_path,
+                        e,
+                        attempt * 2,
+                    )
+                    time.sleep(attempt * 2)
+                    continue
+                logger.error(f"Error sending file {file_path}: {e}")
+                self._send_to_telegram_sync(
+                    chat_id, f"❌ Failed to send file: {e}", thread_id=thread_id
+                )
+                return
+
+        # Only claim success with proof of delivery: a Message carrying an id.
+        message_id = getattr(result, "message_id", None)
+        if message_id is None:
+            logger.error(
+                "SEND_FILE handling for %s completed without a confirmed upload "
+                "(send_document returned %r)",
+                file_path,
+                result,
+            )
+            self._send_to_telegram_sync(
+                chat_id,
+                "❌ Failed to send file: upload was not confirmed",
+                thread_id=thread_id,
+            )
+            return
+
+        logger.info(
+            f"Worker: Sent file {path.name} to Telegram (message_id={message_id})"
+        )
 
     def _markdown_to_html(self, text: str) -> str:
         """Convert markdown formatting to HTML for Telegram."""

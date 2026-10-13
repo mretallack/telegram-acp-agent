@@ -27,15 +27,54 @@ from telegram.ext import (
 from goose_session_acp import GooseSessionACP
 from text_utils import split_message
 
+# Bot tokens look like "<digits>:<urlsafe-base64>". The httpx logger emits full
+# request URLs (api.telegram.org/bot<token>/...), which previously leaked the
+# token in cleartext into the log file. Redact it at the handler level so no
+# record can bypass it.
+_TOKEN_RE = re.compile(r"(bot|Bearer\s+)(\d{6,}:[A-Za-z0-9_-]{20,})")
+LOG_FILE = "/tmp/telegram_goose_bot.log"
+
+
+class _RedactTokenFilter(logging.Filter):
+    """Strip Telegram bot tokens from every log record.
+
+    Redaction happens on the *rendered* message so that ``%d``/``%s`` style
+    lazy formatting keeps working (mutating ``record.args`` would break it).
+    The original ``msg``/``args`` are left intact so other handlers and the
+    ``record.getMessage()`` contract behave normally.
+    """
+
+    def filter(self, record):
+        try:
+            rendered = record.getMessage()
+        except Exception:
+            # If the record can't be rendered, don't make things worse.
+            return True
+        if _TOKEN_RE.search(rendered):
+            # Replace with a pre-rendered string; drop args so the formatter
+            # doesn't try to re-apply them.
+            record.msg = _TOKEN_RE.sub(r"\1<redacted>", rendered)
+            record.args = ()
+        return True
+
+
 # Configure logging
+_file_handler = logging.FileHandler(LOG_FILE)
+try:
+    os.chmod(LOG_FILE, 0o600)  # owner-only: logs may contain sensitive output
+except OSError:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("/tmp/telegram_goose_bot.log"),
-        logging.StreamHandler(),
-    ],
+    handlers=[_file_handler, logging.StreamHandler()],
 )
+_redactor = _RedactTokenFilter()
+for _handler in logging.root.handlers:
+    _handler.addFilter(_redactor)
+# httpx logs request URLs at INFO; make sure its records are redacted too.
+logging.getLogger("httpx").addFilter(_redactor)
 logger = logging.getLogger(__name__)
 
 # Use ACP-based session manager
@@ -83,8 +122,26 @@ class TelegramBot:
         self.goose.typing_refresh_interval = typing_refresh_interval
         self.goose.prompt_timeout = prompt_timeout
 
-        # Build application
-        self.application = Application.builder().token(token).build()
+        # Build application. The default media write timeout is only 20s, which
+        # a 20MB+ video over a ~1MB/s link exceeds — that produced hard "Timed
+        # out" failures on large SEND_FILE uploads. Raise the media timeouts so
+        # large uploads can complete.
+        from telegram.request import HTTPXRequest
+
+        request = HTTPXRequest(
+            connect_timeout=30.0,
+            read_timeout=30.0,
+            write_timeout=60.0,
+            pool_timeout=30.0,
+            media_write_timeout=300.0,
+        )
+        self.application = (
+            Application.builder()
+            .token(token)
+            .request(request)
+            .get_updates_request(HTTPXRequest(connect_timeout=30.0, read_timeout=30.0))
+            .build()
+        )
         self.loop = None
 
         # Set up async callback for Goose to send messages back
@@ -135,6 +192,21 @@ class TelegramBot:
 
         # Global error handler for transient network errors (Fix 5)
         self.application.add_error_handler(self._error_handler)
+
+        # Attach the event loop eagerly (Fix 2). post_init runs inside the loop
+        # that will drive polling, so this is the single source of truth and
+        # removes the lazy attach race that caused silent SEND_FILE failures.
+        self.application.post_init = self._post_init
+
+    async def _post_init(self, application):
+        """Record the running event loop before polling starts."""
+        import asyncio
+
+        self.loop = asyncio.get_running_loop()
+        self.goose.event_loop = self.loop
+        if self.goose.send_to_telegram is not None:
+            self.goose.send_to_telegram.loop = self.loop
+        logger.info(f"Event loop set at startup: {self.loop}")
 
     @staticmethod
     async def _error_handler(update, context):
@@ -897,16 +969,18 @@ class TelegramBot:
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle incoming messages"""
-        # Store the event loop for thread-safe calls
-        if not self.loop:
-            import asyncio
+        # Event loop is set eagerly in _post_init; this is a defensive
+        # fallback that also keeps a stale loop reference up to date.
+        import asyncio
 
-            self.loop = asyncio.get_running_loop()
+        current_loop = asyncio.get_running_loop()
+        if self.loop is not current_loop:
+            self.loop = current_loop
             # Set the loop on the callback so worker thread can use it
             self.goose.send_to_telegram.loop = self.loop
             # Also set it on goose for typing indicator
             self.goose.event_loop = self.loop
-            logger.info(f"Event loop set: {self.loop}")
+            logger.info(f"Event loop (re)set: {self.loop}")
 
         username = update.effective_user.username
         chat_id = update.effective_chat.id
