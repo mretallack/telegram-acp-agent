@@ -31,7 +31,10 @@ def test_parse_config_options_extracts_models_and_modes():
             "id": "model",
             "currentValue": "deepseek/deepseek-v4.1-flash",
             "options": [
-                {"value": "deepseek/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash"},
+                {
+                    "value": "deepseek/deepseek-v4.1-flash",
+                    "name": "DeepSeek V4.1 Flash",
+                },
                 {"value": "openai/gpt-5", "name": "GPT-5", "description": "flagship"},
             ],
         },
