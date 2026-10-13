@@ -20,6 +20,11 @@ from context_tracker import ContextTracker
 
 logger = logging.getLogger(__name__)
 
+# Location of goose's own config file. Goose reads the active provider and the
+# per-provider model from here (and credentials from secrets.yaml), so the bot
+# defers to this config instead of injecting GOOSE_PROVIDER/GOOSE_MODEL env vars.
+GOOSE_CONFIG_PATH = Path("~/.config/goose/config.yaml").expanduser()
+
 
 class GooseSessionACP:
     """Manages Goose ACP sessions with queue-based async/sync bridge."""
@@ -70,6 +75,122 @@ class GooseSessionACP:
         # Output suppression: when True, output is queued instead of sent
         self.suppress_output = False
 
+    def _read_goose_config(self) -> Dict[str, Any]:
+        """Read goose's config.yaml. Returns {} if unavailable."""
+        try:
+            import yaml
+
+            with open(GOOSE_CONFIG_PATH) as f:
+                return yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            logger.warning(f"Goose config not found at {GOOSE_CONFIG_PATH}")
+            return {}
+        except Exception as e:
+            logger.warning(f"Could not read goose config: {e}")
+            return {}
+
+    def _set_model_in_goose_config(self, model_id: str) -> bool:
+        """Set the model for goose's active provider in config.yaml.
+
+        Goose's ACP backend does not support mid-session model switching
+        (session/set_model returns -32601), so we persist the choice to goose's
+        own config and recreate the session instead. Returns True on success.
+        """
+        try:
+            import yaml
+
+            config = self._read_goose_config()
+            if not config:
+                return False
+
+            provider = config.get("active_provider")
+            if not provider:
+                logger.error("goose config has no active_provider; cannot set model")
+                return False
+
+            providers = config.setdefault("providers", {})
+            provider_cfg = providers.setdefault(provider, {})
+            provider_cfg["model"] = model_id
+
+            with open(GOOSE_CONFIG_PATH, "w") as f:
+                yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
+
+            logger.info(
+                f"Wrote model '{model_id}' for provider '{provider}' to goose config"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to write goose config: {e}")
+            return False
+
+    def _recreate_session(self, agent_name: str, chat_id: int):
+        """Close and restart an agent's session so it re-reads goose config."""
+        agent_data = self.agents.get(agent_name)
+        if not agent_data:
+            return
+        try:
+            agent_data["client"].close()
+        except Exception as e:
+            logger.warning(f"Error closing client during session recreate: {e}")
+        self.agents.pop(agent_name, None)
+        # Restart in the same working directory; keep it background if it was
+        # not the active agent so we don't steal focus.
+        self.message_queue.put(
+            {
+                "type": "start_session",
+                "agent_name": agent_name,
+                "working_dir": agent_data.get("working_dir"),
+                "background": agent_name != self.active_agent,
+                "chat_id": chat_id,
+            }
+        )
+
+    @staticmethod
+    def _parse_config_options(config_options: list) -> Dict[str, Any]:
+        """Parse goose configOptions into {models, modes} info dicts."""
+        models_info: Dict[str, Any] = {}
+        modes_info: Dict[str, Any] = {}
+        for opt in config_options or []:
+            opt_id = opt.get("id")
+            if opt_id == "model":
+                models_info = {
+                    "currentModelId": opt.get("currentValue"),
+                    "availableModels": [
+                        {
+                            "modelId": m.get("value"),
+                            "name": m.get("name"),
+                            "description": m.get("description", ""),
+                        }
+                        for m in opt.get("options", [])
+                    ],
+                }
+            elif opt_id == "mode":
+                modes_info = {
+                    "currentModeId": opt.get("currentValue"),
+                    "availableModes": [
+                        {
+                            "id": m.get("value"),
+                            "name": m.get("name"),
+                            "description": m.get("description", ""),
+                        }
+                        for m in opt.get("options", [])
+                    ],
+                }
+        return {"models": models_info, "modes": modes_info}
+
+    def _apply_config_options_result(
+        self, agent_data: Dict[str, Any], result: Dict[str, Any]
+    ) -> None:
+        """Update an agent's cached models/modes from a configOptions response."""
+        opts = (result or {}).get("configOptions")
+        if not opts:
+            return
+        parsed = self._parse_config_options(opts)
+        if parsed["models"]:
+            agent_data["models"] = parsed["models"]
+        if parsed["modes"]:
+            agent_data["modes"] = parsed["modes"]
+
     def get_available_models(self, agent_name: str = None):
         """Get list of available models for an agent."""
         target = agent_name or self.active_agent
@@ -84,7 +205,13 @@ class GooseSessionACP:
             return None
         return self.agents[target].get("modes", {})
 
-    def set_model(self, model_id: str, chat_id: int, agent_name: str = None):
+    def set_model(
+        self,
+        model_id: str,
+        chat_id: int,
+        agent_name: str = None,
+        thread_id: int = None,
+    ):
         """Set the model for an agent (async-safe)."""
         self.message_queue.put(
             {
@@ -92,6 +219,7 @@ class GooseSessionACP:
                 "model_id": model_id,
                 "chat_id": chat_id,
                 "agent_name": agent_name,
+                "thread_id": thread_id,
             }
         )
 
@@ -579,46 +707,33 @@ class GooseSessionACP:
 
             session.on_subagent_update(on_subagent_update)
 
-            # Parse model and mode options from native Goose configOptions
-            models_info = {}
-            modes_info = {}
-            config_options = session_result.get("configOptions", [])
-            for opt in config_options:
-                opt_id = opt.get("id")
-                if opt_id == "model":
-                    available_models = []
-                    for model_opt in opt.get("options", []):
-                        available_models.append(
-                            {
-                                "modelId": model_opt.get("value"),
-                                "name": model_opt.get("name"),
-                                "description": model_opt.get("description", ""),
-                            }
-                        )
-                    models_info = {
-                        "currentModelId": opt.get("currentValue"),
-                        "availableModels": available_models,
-                    }
-                elif opt_id == "mode":
-                    available_modes = []
-                    for mode_opt in opt.get("options", []):
-                        available_modes.append(
-                            {
-                                "id": mode_opt.get("value"),
-                                "name": mode_opt.get("name"),
-                                "description": mode_opt.get("description", ""),
-                            }
-                        )
-                    modes_info = {
-                        "currentModeId": opt.get("currentValue"),
-                        "availableModes": available_modes,
-                    }
+            # Keep cached models/modes in sync when goose reports a config change
+            # (e.g. the user runs /model inside goose, or a provider switch).
+            def on_config_option(config_options):
+                agent_data = self.agents.get(agent_name)
+                if agent_data is not None:
+                    self._apply_config_options_result(
+                        agent_data, {"configOptions": config_options}
+                    )
+
+            session.on_config_option(on_config_option)
+
+            # Parse model and mode options from native Goose configOptions.
+            # Goose reports the current provider/model from its own config here.
+            parsed = self._parse_config_options(session_result.get("configOptions"))
+            models_info = parsed["models"]
+            modes_info = parsed["modes"]
 
             # If fallback is needed (e.g., if configOptions is empty but models field is present)
             if not models_info and "models" in session_result:
                 models_info = session_result.get("models", {})
             if not modes_info and "modes" in session_result:
                 modes_info = session_result.get("modes", {})
+
+            # Preserve chat/thread binding across session recreations (e.g. a
+            # model change that restarts the session), or take it from the msg.
+            prev = self.agents.get(agent_name, {})
+            chat_id = msg.get("chat_id") or prev.get("chat_id")
 
             # Store for this agent
             self.agents[agent_name] = {
@@ -628,8 +743,8 @@ class GooseSessionACP:
                 "working_dir": working_dir,
                 "agent_name": agent_name,
                 "chunks": [],  # Store chunks per agent
-                "chat_id": None,  # Store chat_id per agent
-                "thread_id": None,  # Store thread_id for group topic routing
+                "chat_id": chat_id,  # Store chat_id per agent
+                "thread_id": prev.get("thread_id"),  # Preserve for group topics
                 "models": models_info,  # Store models info
                 "modes": modes_info,  # Store modes info
                 "chunk_timer": None,  # Timer for chunk buffering
@@ -664,22 +779,81 @@ class GooseSessionACP:
             self._send_error(chat_id, "No active agent")
             return
 
+        agent_data = self.agents[target_agent]
+        session = agent_data["session"]
+        # Reply in the same topic/thread the command came from, if any.
+        thread_id = msg.get("thread_id") or agent_data.get("thread_id")
+
+        # Defensive validation: goose accepts arbitrary strings as model ids, so
+        # reject ids that clearly aren't in the current provider's model list.
+        known = {
+            m.get("modelId")
+            for m in agent_data.get("models", {}).get("availableModels", [])
+        }
+        if known and model_id not in known:
+            logger.warning(
+                f"Worker: rejecting unknown model id '{model_id}' for {target_agent}"
+            )
+            self._send_error(
+                chat_id,
+                f"Unknown model: {model_id}\n"
+                "Use \\model list to see available models for your provider.",
+                agent_name=target_agent,
+                thread_id=thread_id,
+            )
+            return
+
+        # Best path: ACP session/set_config_option (configId="model"). Goose
+        # supports this and applies the change in-session without a restart.
         try:
-            agent_data = self.agents[target_agent]
-            session = agent_data["session"]
-            session.client.set_model(session.session_id, model_id)
-
-            # Update stored model info
+            result = session.set_config_option("model", model_id)
+            self._apply_config_options_result(agent_data, result)
             agent_data["models"]["currentModelId"] = model_id
-
-            self._send_to_telegram_sync(chat_id, f"✓ Model set to: {model_id}")
+            self._send_to_telegram_sync(
+                chat_id,
+                f"✓ Model set to: {model_id}",
+                agent_name=target_agent,
+                thread_id=thread_id,
+            )
             logger.info(f"Worker: Set model to {model_id} for {target_agent}")
+            return
         except Exception as e:
-            logger.error(f"Worker: Error setting model: {e}")
-            import traceback
+            logger.info(f"set_config_option(model) failed ({e}); trying fallbacks")
 
-            traceback.print_exc()
-            self._send_error(chat_id, f"Failed to set model: {str(e)}")
+        # Fallback 1: legacy session/set_model (supported by some agents).
+        try:
+            session.client.set_model(session.session_id, model_id)
+            agent_data["models"]["currentModelId"] = model_id
+            self._send_to_telegram_sync(
+                chat_id,
+                f"✓ Model set to: {model_id}",
+                agent_name=target_agent,
+                thread_id=thread_id,
+            )
+            logger.info(f"Worker: Set model via set_model for {target_agent}")
+            return
+        except Exception as e:
+            logger.info(f"session/set_model failed ({e}); using config + restart")
+
+        # Fallback 2: persist to goose's own config and recreate the session.
+        if not self._set_model_in_goose_config(model_id):
+            self._send_error(
+                chat_id,
+                "Could not set model: goose config is unavailable "
+                f"({GOOSE_CONFIG_PATH})",
+                agent_name=target_agent,
+                thread_id=thread_id,
+            )
+            return
+
+        self._send_to_telegram_sync(
+            chat_id,
+            f"✓ Model set to: {model_id}\n"
+            "♻️ Restarting session to apply (goose reads the model from config)...",
+            agent_name=target_agent,
+            thread_id=thread_id,
+        )
+        self._recreate_session(target_agent, chat_id)
 
     def _handle_set_mode(self, msg: Dict[str, Any]):
         """Handle set_mode request in worker thread."""

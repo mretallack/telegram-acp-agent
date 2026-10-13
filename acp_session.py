@@ -37,6 +37,7 @@ class ACPSession:
         self.mcp_event_callbacks = []
         self.metadata_callbacks = []
         self.subagent_callbacks = []
+        self.config_option_callbacks = []
 
         # Register notification handler
         self.client.on_notification(self._handle_notification)
@@ -218,6 +219,12 @@ class ACPSession:
             for callback in self.metadata_callbacks:
                 callback(metadata)
 
+        elif update_type == "config_option_update":
+            logger.debug("ACPSession: Received config_option_update")
+            config_options = update.get("configOptions", [])
+            for callback in self.config_option_callbacks:
+                callback(config_options)
+
         elif update_type in ["session_info_update", "user_message_chunk"]:
             logger.debug(f"ACPSession: Ignoring standard update type: {update_type}")
 
@@ -309,6 +316,9 @@ class ACPSession:
         """Register callback for metadata notifications."""
         self.metadata_callbacks.append(callback)
 
+    def on_config_option(self, callback: Callable[[list], None]) -> None:
+        self.config_option_callbacks.append(callback)
+
     def on_subagent_update(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         """Register callback for subagent list updates."""
         self.subagent_callbacks.append(callback)
@@ -324,6 +334,10 @@ class ACPSession:
     def set_model(self, model: str) -> None:
         """Change the model."""
         self.client.set_model(self.session_id, model)
+
+    def set_config_option(self, config_id: str, value: str) -> Dict[str, Any]:
+        """Set a session config option (e.g. "model", "mode", "provider")."""
+        return self.client.set_config_option(self.session_id, config_id, value)
 
     def get_accumulated_message(self) -> str:
         """Get accumulated message chunks."""

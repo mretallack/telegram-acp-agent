@@ -21,14 +21,15 @@ prompt_timeout = 600
 topic_cache = ~/.goose/topic_agent_map.json
 
 [goose_env]
-# Set the provider to Google
-GOOSE_PROVIDER = google
+# Optional: extra environment variables passed to the `goose acp` subprocess.
+#
+# Provider, model, and API credentials are NO LONGER set here. Goose reads
+# active_provider / providers.<name>.model from its own config
+# (~/.config/goose/config.yaml) and secrets (~/.config/goose/secrets.yaml).
+# Configure goose once with `goose configure`, then leave this section as-is.
+#
+# Only set GOOSE_PROVIDER / GOOSE_MODEL / *_API_KEY here if you deliberately
+# want to override your goose config for bot sessions only.
 
-# Set your Gemini API key
-GOOGLE_API_KEY = your_actual_gemini_api_key_here
-
-# Specify the exact model to use (required to bypass the setup wizard)
-GOOSE_MODEL = gemini-3.5-flash-lite
-
-# Disable telemetry so the CLI doesn't prompt you for consent on startup
+# Keep telemetry off so the CLI doesn't prompt you for consent on startup
 GOOSE_TELEMETRY_ENABLED = false

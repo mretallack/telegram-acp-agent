@@ -130,10 +130,22 @@ Send voice messages or audio files to the bot — they are automatically transcr
 
 Examples:
 ```
-\model list                    # Show available models
-\model claude-sonnet-4.5       # Switch to Claude Sonnet 4.5
-\model claude-opus-4.6         # Switch to Claude Opus 4.6
+\model list                            # Show available models
+\model anthropic/claude-sonnet-5       # Switch to Claude Sonnet 5
+\model deepseek/deepseek-v4.1-flash    # Switch to DeepSeek V4.1 Flash
 ```
+
+How it works:
+- `\model list` **shows** the models available from the active provider configured
+  in Goose (`~/.config/goose/config.yaml`). The list is long (hundreds of models)
+  and is sent as multiple messages.
+- `\model <model_id>` **switches** to that model. Copy an id from the `\model list`
+  output (tap it to copy in Telegram).
+
+Switching uses the ACP `session/set_config_option` call (configId=`model`), which
+Goose applies in-session — no restart needed. If a session can't switch models
+dynamically, the bot falls back to `session/set_model`, then to writing the model
+into Goose's own config and restarting the session so the change takes effect.
 
 ### Limitations
 
@@ -298,13 +310,44 @@ When Goose includes `SEND_FILE:/absolute/path/to/file` in its response message t
 
 ## Setup
 
-1. Copy settings template and configure:
+### 1. Configure Goose (provider & model)
+
+The bot does **not** set the provider, model, or API keys itself. It launches
+`goose acp` as a subprocess, and Goose reads those values from its own config:
+
+- `~/.config/goose/config.yaml` — `active_provider` and `providers.<name>.model`
+- `~/.config/goose/secrets.yaml` — API credentials (keyring-backed)
+
+Configure Goose once before starting the bot:
+
+```bash
+# Interactive: pick a provider, paste your API key, choose a model
+goose configure
+
+# Verify the active provider/model
+grep -E 'active_provider|model:' ~/.config/goose/config.yaml
+
+# Smoke test (should print a one-line reply)
+goose run --text "reply with just: OK"
+```
+
+> **Note:** `[goose_env]` in `settings.ini` is only for optional overrides and
+> for flags like `GOOSE_TELEMETRY_ENABLED`. Do **not** put `GOOSE_PROVIDER`,
+> `GOOSE_MODEL`, or `*_API_KEY` there unless you deliberately want to override
+> your Goose config for bot sessions — those environment variables take
+> precedence over `config.yaml` and will shadow your `goose configure` setup.
+> If a bot session fails with "Configuration value not found: <PROVIDER>_API_KEY",
+> it almost always means one of these env vars is still set.
+
+### 2. Configure the bot
+
+Copy settings template and configure:
 ```bash
 cp settings.ini.template settings.ini
 # Edit settings.ini with your bot token and authorized user
 ```
 
-2. Setup and run:
+### 3. Setup and run:
 ```bash
 # Setup virtual environment and run tests
 make setup
@@ -428,8 +471,11 @@ journalctl --user-unit telegram-goose-bot -f
 - **Tool call chunks** (`_goose.dev/session/update` → `tool_call_chunk`): Streaming tool output from subagents (file contents, command output as it runs). Very noisy (~50/min during active subagent work). Could optionally show live subagent output, but would flood the chat without filtering/summarisation.
 - **Commands available** (`_goose.dev/commands/available`): Full list of slash commands with descriptions, sent after session creation. Could validate commands in `\help`, provide autocomplete suggestions, or detect typos in user commands.
 
+### ACP Features (Implemented)
+- **Dynamic model switching** (`\model <id>`): Uses ACP `session/set_config_option` (configId=`model`), which Goose applies in-session. The legacy `session/set_model` method returns method not found (-32601) on Goose and is only used as a fallback, with a final fallback that writes Goose's own config and restarts the session.
+- **`_session/terminate`**: ✅ Implemented as `\subagents kill <name>`
+
 ### ACP Features (Not Yet Implemented)
 - **`/chat new`**: Start fresh conversation without restarting the goose process. Would avoid the full session restart overhead.
 - **`/spawn`**: Explicitly kick off parallel agent sessions from Telegram. Fire-and-forget background tasks with completion notifications.
 - **`/transcript`**: Review conversation history. Could be exposed as a `\transcript` bot command.
-- **`_session/terminate`**: ✅ Implemented as `\subagents kill <name>`

@@ -25,6 +25,7 @@ from telegram.ext import (
 
 # Import ACP session manager
 from goose_session_acp import GooseSessionACP
+from text_utils import split_message
 
 # Configure logging
 logging.basicConfig(
@@ -778,13 +779,16 @@ class TelegramBot:
             agent_name = self._topic_agent_cache.get(thread_id)
             parts = normalized.split(maxsplit=1)
             if len(parts) >= 2:
-                if parts[1] == "list":
+                arg = parts[1].strip()
+                # Treat "list"/"ls" as the list subcommand even with stray text
+                # (e.g. "\model list 12:58" from mobile keyboards).
+                if arg.lower() in ("list", "ls") or arg.lower().startswith("list "):
                     if agent_name and agent_name in self.goose.agents:
                         models_info = self.goose.get_available_models(agent_name)
                         if models_info:
                             current_model = models_info.get("currentModelId", "unknown")
                             available_models = models_info.get("availableModels", [])
-                            response = f"<b>Model ({agent_name}):</b> <code>{current_model}</code>\n\n<b>Available:</b>\n"
+                            response = f"<b>Model ({agent_name}):</b> <code>{current_model}</code>\n\n<b>Available:</b> ({len(available_models)})\n"
                             for model in available_models:
                                 mid = model.get("modelId", "unknown")
                                 desc = model.get("description", "")
@@ -793,12 +797,15 @@ class TelegramBot:
                                     response += f"{marker}<code>{mid}</code> - {desc}\n"
                                 else:
                                     response += f"{marker}<code>{mid}</code>\n"
-                            await context.bot.send_message(
-                                chat_id=chat_id,
-                                text=response,
-                                message_thread_id=thread_id,
-                                parse_mode="HTML",
-                            )
+                            # Providers expose hundreds of models; Telegram caps
+                            # messages at 4096 chars, so send in chunks.
+                            for chunk in split_message(response):
+                                await context.bot.send_message(
+                                    chat_id=chat_id,
+                                    text=chunk,
+                                    message_thread_id=thread_id,
+                                    parse_mode="HTML",
+                                )
                         else:
                             await context.bot.send_message(
                                 chat_id=chat_id,
@@ -812,9 +819,15 @@ class TelegramBot:
                             message_thread_id=thread_id,
                         )
                 else:
-                    model_id = parts[1]
+                    # Take the first token so trailing text isn't folded in.
+                    model_id = arg.split()[0]
                     if agent_name and agent_name in self.goose.agents:
-                        self.goose.set_model(model_id, chat_id, agent_name=agent_name)
+                        self.goose.set_model(
+                            model_id,
+                            chat_id,
+                            agent_name=agent_name,
+                            thread_id=thread_id,
+                        )
                     else:
                         await context.bot.send_message(
                             chat_id=chat_id,
@@ -998,12 +1011,16 @@ class TelegramBot:
             print(f"[DEBUG] Intercepted model command")
             parts = normalized_text.split(maxsplit=1)
             if len(parts) == 2:
-                if parts[1] == "list":
+                arg = parts[1].strip()
+                # Treat "list"/"ls" as the list subcommand even with stray text
+                # (e.g. "\model list 12:58" from mobile keyboards).
+                if arg.lower() in ("list", "ls") or arg.lower().startswith("list "):
                     await self.show_models(update, context)
                     return True
                 else:
-                    # Set model
-                    model_id = parts[1]
+                    # Set model — take the first whitespace-separated token so
+                    # trailing text isn't folded into the model id.
+                    model_id = arg.split()[0]
                     await self.set_model(update, context, model_id)
                     return True
             else:
@@ -1409,7 +1426,7 @@ Help
                 current_mode = modes_info.get("currentModeId", "unknown")
                 response += f"<b>Current Mode:</b> <code>{current_mode}</code>\n"
 
-            response += f"\n<b>Available Models:</b>\n"
+            response += f"\n<b>Available Models:</b> ({len(available_models)})\n"
             for model in available_models:
                 model_id = model.get("modelId", "unknown")
                 name = model.get("name", "unknown")
@@ -1420,7 +1437,10 @@ Help
                 else:
                     response += f"{marker}<code>{model_id}</code>\n"
 
-            await update.message.reply_text(response, parse_mode="HTML")
+            # Providers can expose hundreds of models; Telegram caps messages at
+            # 4096 chars, so send in chunks.
+            for chunk in split_message(response):
+                await update.message.reply_text(chunk, parse_mode="HTML")
         except Exception as e:
             logger.error(f"Error showing models: {e}")
             await update.message.reply_text(f"❌ Error: {e}")

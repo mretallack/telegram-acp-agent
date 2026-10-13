@@ -299,10 +299,32 @@ class ACPClient:
         logger.info(f"Set mode to: {mode}")
 
     def set_model(self, session_id: str, model: str) -> None:
-        """Change the model for the session."""
+        """Change the model for the session.
+
+        NOTE: Goose's ACP backend does not implement session/set_model (it
+        returns -32601 Method not found). Prefer set_config_option(..., "model").
+        Kept for compatibility with agents that do support it.
+        """
         params = {"sessionId": session_id, "modelId": model}
         self._send_request("session/set_model", params)
         logger.info(f"Set model to: {model}")
+
+    def set_config_option(
+        self, session_id: str, config_id: str, value: str
+    ) -> Dict[str, Any]:
+        """Set a session config option (e.g. configId="model" or "mode").
+
+        This is the ACP mechanism Goose supports for changing model/provider/
+        mode mid-session. Returns the updated configOptions payload.
+        """
+        params = {
+            "sessionId": session_id,
+            "configId": config_id,
+            "value": value,
+        }
+        result = self._send_request("session/set_config_option", params)
+        logger.info(f"Set config option {config_id}={value}")
+        return result
 
     def execute_command(self, session_id: str, command: str) -> Dict[str, Any]:
         """Execute a slash command (Goose extension)."""

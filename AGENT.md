@@ -11,7 +11,17 @@
 - **`acp_utils.py`, `text_utils.py`**: Utility functions for text formatting, splitting long messages, etc.
 - **`test_goose_integration.py` & `tests/`**: Comprehensive integration and unit test suites.
 - **`Makefile`**: Automation targets for setup, testing, running, and systemd service management.
-- **`settings.ini` / `settings.ini.template`**: Configuration file for bot tokens, authorized users, and paths.
+- **`settings.ini` / `settings.ini.template`**: Configuration file for bot tokens, authorized users, and paths. Its `[goose_env]` section is optional and used only for extra environment variables (telemetry/keyring flags); provider, model, and API credentials come from Goose's own config (`~/.config/goose/config.yaml` + `secrets.yaml`), not from the bot.
+
+## Provider / Model Configuration
+The bot spawns `goose acp` and lets Goose resolve the provider and model from
+`~/.config/goose/config.yaml` (`active_provider`, `providers.<name>.model`) and
+credentials from `~/.config/goose/secrets.yaml`. Do **not** inject
+`GOOSE_PROVIDER`, `GOOSE_MODEL`, or `*_API_KEY` env vars — they take precedence
+over the config and will shadow the user's `goose configure` setup. Model
+switching (`\model`) uses ACP `session/set_config_option` (configId=`model`),
+falling back to `session/set_model`, then to writing Goose's config + restarting
+the session.
 
 ## Key Features
 1. **Persistent ACP Sessions**: Communicates with Goose via structured JSON-RPC over ACP protocol.

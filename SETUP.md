@@ -21,16 +21,34 @@ python3 telegram_goose_bot.py
 - `telegram-goose-bot.service` - Systemd service file
 
 ## Configuration
+
+### 1. Configure Goose (provider & model)
+The bot defers provider, model, and credentials to Goose's own config — it does
+not set them via environment variables. Configure Goose once:
+
+```bash
+goose configure      # choose provider, paste API key, pick model
+goose run --text "ok"  # smoke test
+```
+
+Settings live in `~/.config/goose/config.yaml` (`active_provider`,
+`providers.<name>.model`) and `~/.config/goose/secrets.yaml`.
+
+### 2. Configure the bot
 Edit `settings.ini`:
 ```ini
 [telegram]
 token = YOUR_BOT_TOKEN
 
 [bot]
-authorized_user = your_telegram_username
+authorized_user_id = YOUR_TELEGRAM_USER_ID
 auto_trust = true
 progress_updates = true
 ```
+
+> `[goose_env]` in `settings.ini` is optional and only for extra environment
+> variables (e.g. `GOOSE_TELEMETRY_ENABLED`). Do not set `GOOSE_PROVIDER`,
+> `GOOSE_MODEL`, or `*_API_KEY` there — they override `config.yaml`.
 
 ## Available Commands
 - `make run` - Start the bot
@@ -42,7 +60,7 @@ progress_updates = true
 - `make clean` - Clean up virtual environment
 
 ## How It Works
-1. Bot starts persistent `goose chat` session
+1. Bot starts a persistent `goose acp` session (Goose reads provider/model from its own config)
 2. Receives Telegram messages from authorized users
 3. Forwards messages to Goose CLI
 4. Returns Goose responses back to Telegram
